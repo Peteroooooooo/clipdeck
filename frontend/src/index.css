@@ -977,6 +977,9 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   height: 0;
 }
 
+/* will-change: opacity keeps the bar its own layer at all times, as it is while its open animation
+   runs. Without it the glass inside re-blurs the window's own dark tint as soon as the animation
+   ends, and the bar dropped from light to dark grey (the desktop is never visible to it). */
 .search-bar {
   position: absolute;
   left: 14px;
@@ -986,6 +989,7 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  will-change: opacity;
 }
 
 .search-bar.is-shown {
@@ -1079,145 +1083,21 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   color: var(--text-1);
 }
 
-/* ── Search glow (EdgeGlow.tsx), after the ColorOS / Apple Intelligence listening glow ──
-   Only while the search is in use. What makes that glow read as light rather than paint:
-   - light, luminous colours (cyan, lemon, peach, pink, lavender), never dark saturated ones;
-   - a near-white core right at the edge, a band of colour behind it, then a soft haze inwards;
-   - long, coherent runs of each colour: every ring uses the same palette and turns together.
-   The window clips the outer half of every blur, so the light seeps inwards. */
+/* ── Search glow (EdgeGlow.tsx): Siri-style light from the window edges while searching. The
+   shader (edgeGlowShader.ts) draws it, fades it in and out and clips it to the window's corners;
+   deliberately no mix-blend-mode, which would cut the liquid glass off from what is behind it. */
 .edge-glow {
   position: absolute;
   inset: 0;
   z-index: 25;
   border-radius: inherit;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.8s ease;
-  --glow-colors: #8ef6ff, #f4ffa0, #ffe08a, #ffb38a, #ff9fd2, #cfa8ff, #9fd0ff, #8ef6ff;
 }
 
-.edge-glow.is-active {
-  opacity: 1;
-  transition-duration: 0.3s;
-}
-
-/* The glow only moves while it can be seen (lit, or fading out: is-fading, EdgeGlow.tsx). Its
-   rings repaint every frame they move, so left running unseen they cost as much as visible. */
-.edge-glow.is-active,
-.edge-glow.is-fading {
-  /* The colours run round the window, all rings together. */
-  animation: edge-glow-spin 9s linear infinite;
-}
-
-.edge-glow > i {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  filter: blur(var(--glow-blur));
-  opacity: var(--glow-alpha);
-}
-
-/* Arriving, the light reaches further in than where it settles; then it breathes. The same list
-   while fading, so the breath carries on instead of restarting. */
-.edge-glow.is-active > i,
-.edge-glow.is-fading > i {
-  animation:
-    edge-glow-bloom 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both,
-    edge-glow-breathe 2s ease-in-out 0.8s infinite alternate;
-}
-
-.edge-glow > i::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: calc(var(--glow-width) * var(--glow-bloom) * var(--glow-breath));
-  background: conic-gradient(from var(--glow-spin), var(--glow-colors));
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box exclude,
-    linear-gradient(#000 0 0);
-}
-
-/* Core: the same colours washed almost to white, a hairline right at the edge. */
-.edge-glow > i:nth-child(1) {
-  --glow-width: 2.5px;
-  --glow-blur: 0.4px;
-  --glow-alpha: 1;
-  --glow-delay: 0s;
-  --glow-colors: #e8feff, #fdffe2, #fff5dc, #ffeadf, #ffe6f4, #f1e6ff, #e6f3ff, #e8feff;
-}
-
-/* Tube: the colour band behind the core. */
-.edge-glow > i:nth-child(2) {
-  --glow-width: 7px;
-  --glow-blur: 3px;
-  --glow-alpha: 0.95;
-  --glow-delay: -0.8s;
-}
-
-/* Halo: the light spilling inwards. */
-.edge-glow > i:nth-child(3) {
-  --glow-width: 20px;
-  --glow-blur: 14px;
-  --glow-alpha: 0.7;
-  --glow-delay: -1.6s;
-}
-
-/* Haze: a faint tint far into the window. */
-.edge-glow > i:nth-child(4) {
-  --glow-width: 46px;
-  --glow-blur: 36px;
-  --glow-alpha: 0.32;
-  --glow-delay: -2.4s;
-}
-
-@property --glow-spin {
-  syntax: '<angle>';
-  inherits: true;
-  initial-value: 0deg;
-}
-
-@property --glow-bloom {
-  syntax: '<number>';
-  inherits: true;
-  initial-value: 1;
-}
-
-@property --glow-breath {
-  syntax: '<number>';
-  inherits: true;
-  initial-value: 1;
-}
-
-@keyframes edge-glow-spin {
-  to {
-    --glow-spin: 360deg;
-  }
-}
-
-@keyframes edge-glow-bloom {
-  0% {
-    --glow-bloom: 0;
-  }
-  45% {
-    --glow-bloom: 1.6;
-  }
-  100% {
-    --glow-bloom: 1;
-  }
-}
-
-@keyframes edge-glow-breathe {
-  from {
-    --glow-breath: 0.86;
-  }
-  to {
-    --glow-breath: 1.14;
-  }
+.edge-glow-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* ── Always on top switched on: the pin is pressed into the glass and a water ripple runs out
@@ -2472,9 +2352,6 @@ html.no-motion .liquid-preview-track {
 }
 
 html.no-motion .rec-dot,
-html.no-motion .edge-glow,
-html.no-motion .edge-glow > i,
-html.no-motion .edge-glow > i::before,
 html.no-motion .panel-card[data-lit] .panel-card-edge::before {
   animation: none;
 }
@@ -2511,8 +2388,6 @@ html.no-motion *::after {
 @media (prefers-reduced-motion: reduce) {
   .rec-dot,
   .liquid-preview-track,
-  .edge-glow > i,
-  .edge-glow > i::before,
   .panel-card[data-lit] .panel-card-edge::before {
     animation: none;
   }
