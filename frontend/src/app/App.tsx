@@ -205,6 +205,7 @@ function App() {
         isRecordingPaused={snapshot.isRecordingPaused}
         onClearHistory={() => void handleClearHistory()}
         onCopy={(recordId: string) => syncSnapshot(desktopApi.copyRecord(recordId))}
+        onSaveImage={(recordId: string) => syncSnapshot(desktopApi.saveImage(recordId))}
         onDelete={(recordId: string) => syncSnapshot(desktopApi.deleteRecord(recordId))}
         onHideWindow={() => desktopApi.hideWindow()}
         onOpenSettings={() => syncSnapshot(desktopApi.setView('settings'))}

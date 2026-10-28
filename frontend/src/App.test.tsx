@@ -334,6 +334,35 @@ describe('App shell', () => {
     expect(screen.getByText('%LOCALAPPDATA%\\ClipDeck\\selected-data')).toBeInTheDocument()
   })
 
+  test('saving an image clip shows where it went', async () => {
+    const user = userEvent.setup()
+    const saveImageSpy = vi.spyOn(desktopApi, 'saveImage')
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
+
+    const [saveButton] = screen.getAllByRole('button', { name: 'Save image' })
+    await user.click(saveButton)
+
+    expect(saveImageSpy).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('图片已保存')).toBeInTheDocument()
+  })
+
+  test('the image save folder defaults to the Desktop and can be changed', async () => {
+    const user = userEvent.setup()
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByTestId('image-save-path-value')).toHaveTextContent('%USERPROFILE%\\Desktop')
+
+    await user.click(screen.getByRole('button', { name: 'Browse image save folder' }))
+    expect(screen.getByTestId('image-save-path-value')).toHaveTextContent('%USERPROFILE%\\Desktop\\selected-data')
+  })
+
   test('renders storage path as a stacked preview block with a separate browse action', async () => {
     const user = userEvent.setup()
 

@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion, PresenceContext } from 'motion/react'
-import { Copy, File, Image, PushPin, TextAa, TextAlignLeft, TrashSimple } from '@phosphor-icons/react'
+import { Copy, DownloadSimple, File, Image, PushPin, TextAa, TextAlignLeft, TrashSimple } from '@phosphor-icons/react'
 import type { HistoryRecord } from '../../app/types'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
 import { useLensGroup } from '../../shared/ui/liquid/useLiquidLens'
@@ -102,6 +102,7 @@ interface HistoryCardProps {
   onCopy: (recordId: string) => void
   onPlainTextPaste?: (recordId: string) => void
   onPrimaryAction?: (recordId: string) => void
+  onSaveImage?: (recordId: string) => void
 }
 
 // Memoised: moving the pointer down the list re-renders only the row it left and the one it
@@ -116,6 +117,7 @@ export const HistoryCard = memo(function HistoryCard({
   onCopy,
   onPlainTextPaste,
   onPrimaryAction,
+  onSaveImage,
 }: HistoryCardProps) {
   const { groupRef: actionsRef, lensRef } = useLensGroup<HTMLDivElement>()
   const cardRef = useRef<HTMLElement | null>(null)
@@ -215,6 +217,18 @@ export const HistoryCard = memo(function HistoryCard({
             </motion.div>
           ) : null}
         </PresenceContext.Provider>
+        {record.type === 'image' && onSaveImage && (
+          <button
+            aria-label="Save image"
+            className="action-button"
+            data-lens=""
+            onClick={() => onSaveImage(record.id)}
+            title="保存到本地"
+            type="button"
+          >
+            <DownloadSimple size={15} />
+          </button>
+        )}
         <button aria-label="Copy" className="action-button" data-lens="" onClick={() => onCopy(record.id)} title="Copy" type="button">
           <Copy size={15} />
         </button>

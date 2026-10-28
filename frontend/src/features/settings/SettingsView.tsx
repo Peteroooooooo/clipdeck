@@ -302,6 +302,36 @@ export function SettingsView({
                 </button>
               </div>
             </div>
+            <div className="field-row field-row-storage">
+              <div className="field-label">
+                <strong>Image Save Folder</strong>
+                <span>Where the save button on image clips puts the picture</span>
+              </div>
+              <div className="storage-path-stack" data-testid="image-save-path-stack">
+                <div className="storage-path-value" data-testid="image-save-path-value" title={draft.imageSavePath}>
+                  {draft.imageSavePath}
+                </div>
+                <button
+                  aria-label="Browse image save folder"
+                  className="ghost-button storage-path-browse"
+                  onClick={() =>
+                    void onPickStoragePath(draft.imageSavePath).then((selectedPath) => {
+                      if (!selectedPath) {
+                        return
+                      }
+
+                      setDraft((currentDraft) => ({
+                        ...currentDraft,
+                        imageSavePath: selectedPath,
+                      }))
+                    })
+                  }
+                  type="button"
+                >
+                  Browse
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 

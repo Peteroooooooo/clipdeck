@@ -16,6 +16,7 @@ declare global {
         clear_all_history: () => Promise<AppSnapshot>
         clear_unpinned_history: () => Promise<AppSnapshot>
         copy_record: (recordId: string) => Promise<AppSnapshot>
+        save_image: (recordId: string) => Promise<AppSnapshot>
         trigger_primary_action: (recordId: string) => Promise<AppSnapshot>
         paste_plain_text: (recordId: string) => Promise<AppSnapshot>
         save_settings: (settings: SettingsState, pauseRecording: boolean) => Promise<AppSnapshot>

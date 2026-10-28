@@ -49,6 +49,7 @@ interface QuickPanelViewProps {
   onTogglePin: (recordId: string) => void
   onDelete: (recordId: string) => void
   onCopy: (recordId: string) => void
+  onSaveImage: (recordId: string) => void
   onPrimaryAction: (recordId: string) => void
   onPastePlainText: (recordId: string) => void
   onClearHistory: () => void
@@ -137,6 +138,7 @@ export function QuickPanelView({
   onTogglePin,
   onDelete,
   onCopy,
+  onSaveImage,
   onPrimaryAction,
   onPastePlainText,
   onClearHistory,
@@ -424,6 +426,7 @@ export function QuickPanelView({
       onPinToggle={onTogglePin}
       onPlainTextPaste={onPastePlainText}
       onPrimaryAction={onPrimaryAction}
+      onSaveImage={onSaveImage}
       record={record}
     />
   )
