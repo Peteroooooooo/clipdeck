@@ -56,6 +56,51 @@ interface QuickPanelViewProps {
   onHideWindow: () => void
 }
 
+/**
+ * While the search bar is a drop, keeps it under the magnifier as drawn: on a click the title bar
+ * capsule leans towards the pointer, is squeezed by the press and springs back, all while the drop
+ * falls, so a path fixed at the click leaves the drop beside it. The correction (the drawn
+ * magnifier's offset from its resting centre, restX) fades out as the drop spreads into the bar.
+ * Uses `translate`, separate from the transform the bar's own animation writes.
+ */
+function followDrop(
+  bar: HTMLElement,
+  row: HTMLElement,
+  magnifier: HTMLElement,
+  restX: number,
+  fullWidth: number,
+  isCurrent: () => boolean,
+) {
+  const started = performance.now()
+  const step = () => {
+    if (!isCurrent() || performance.now() - started > 1200) {
+      if (isCurrent()) bar.style.translate = ''
+      return
+    }
+    const rowBox = row.getBoundingClientRect()
+    const glyph = magnifier.getBoundingClientRect()
+    // Page units, also while the whole panel is scaled (its reveal).
+    const scale = row.offsetWidth ? rowBox.width / row.offsetWidth : 1
+    const drawnX = (glyph.left + glyph.width / 2 - rowBox.left) / (scale || 1)
+    const width = bar.getBoundingClientRect().width / (scale || 1)
+    const asDrop = 1 - Math.min(1, Math.max(0, (width - DROP) / Math.max(1, fullWidth - DROP)))
+    bar.style.translate = `${((drawnX - restX) * asDrop).toFixed(2)}px 0`
+    requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+
+/** An element's box as laid out in the page, ignoring every transform on it and its ancestors. */
+function layoutBox(element: HTMLElement) {
+  let left = element.offsetLeft
+  let top = element.offsetTop
+  for (let parent = element.offsetParent as HTMLElement | null; parent; parent = parent.offsetParent as HTMLElement | null) {
+    left += parent.offsetLeft + parent.clientLeft
+    top += parent.offsetTop + parent.clientTop
+  }
+  return { left, top, width: element.offsetWidth, height: element.offsetHeight }
+}
+
 function matchesQuery(record: HistoryRecord, query: string) {
   const searchable = `${record.summary} ${record.detail} ${record.sourceApp}`.toLowerCase()
   return searchable.includes(query.toLowerCase())
@@ -237,12 +282,16 @@ export function QuickPanelView({
       inputRef.current?.focus({ preventScroll: true })
     }
     const rowBox = row.getBoundingClientRect()
-    const magBox = magnifier.getBoundingClientRect()
-    const fullWidth = rowBox.width - BAR_INSET_X * 2
-    const dropX = magBox.left + magBox.width / 2 - DROP / 2 - (rowBox.left + BAR_INSET_X)
-    const dropY = magBox.top + magBox.height / 2 - DROP / 2 - (rowBox.top + BAR_INSET_Y)
+    // The drop's path is laid out from where the magnifier rests; followDrop() then keeps the drop
+    // under where it is drawn (leaning towards the pointer, pressed, springing back).
+    const magBox = layoutBox(magnifier)
+    const rowLayout = layoutBox(row)
+    const fullWidth = rowLayout.width - BAR_INSET_X * 2
+    const dropX = magBox.left + magBox.width / 2 - DROP / 2 - (rowLayout.left + BAR_INSET_X)
+    const dropY = magBox.top + magBox.height / 2 - DROP / 2 - (rowLayout.top + BAR_INSET_Y)
     const instant = motionOff()
     const run = ++barRun.current
+    if (!instant) followDrop(bar, row, magnifier, magBox.left + magBox.width / 2 - rowLayout.left, fullWidth, () => barRun.current === run)
 
     // Clicked again mid-animation: carry on from wherever the bar is, never from the start.
     const box = bar.getBoundingClientRect()
