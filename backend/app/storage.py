@@ -26,7 +26,20 @@ class AppStorage:
         self.icons_path = self.base_path / "icons"
         self.history_path = self.base_path / "history.json"
         self.settings_path = self.base_path / "settings.json"
+        self.window_path = self.base_path / "window.json"
         self._ensure_directories()
+
+    def load_panel_height(self) -> int | None:
+        """The panel height the user last stretched the window to (DIPs), if any."""
+        try:
+            height = json.loads(self.window_path.read_text(encoding="utf-8"))["panelHeight"]
+        except (OSError, *_MALFORMED_PAYLOAD_ERRORS):
+            return None
+        return height if isinstance(height, int) and not isinstance(height, bool) else None
+
+    def save_panel_height(self, height: int) -> None:
+        self._ensure_directories()
+        atomic_write_text(self.window_path, json.dumps({"panelHeight": int(height)}))
 
     def load_settings(self) -> SettingsState:
         self._ensure_directories()

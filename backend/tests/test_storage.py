@@ -25,6 +25,18 @@ def sample_record() -> HistoryRecord:
     )
 
 
+def test_panel_height_round_trips_and_ignores_broken_files(tmp_path: Path) -> None:
+    storage = AppStorage(base_path=tmp_path / "data")
+    assert storage.load_panel_height() is None
+
+    storage.save_panel_height(812)
+    assert AppStorage(base_path=tmp_path / "data").load_panel_height() == 812
+
+    for broken in ("{not json", json.dumps({"panelHeight": "tall"}), json.dumps([1])):
+        storage.window_path.write_text(broken, encoding="utf-8")
+        assert storage.load_panel_height() is None
+
+
 def test_image_uris_resolve_back_to_unc_and_percent_named_folders() -> None:
     for original in (r"\\server\share\cc\images\x.png", r"D:\100%41 dir\images\a b.png"):
         assert storage_module.resolve_local_path(Path(original).as_uri()) == Path(original)

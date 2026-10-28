@@ -17,6 +17,7 @@ class AppBridge:
         self._is_always_on_top: Callable[[], bool] | None = None
         self._preview_appearance: Callable[[dict[str, object]], None] | None = None
         self._begin_window_drag: Callable[[float, float], None] | None = None
+        self._begin_window_resize: Callable[[str, float], None] | None = None
         self._conceal_window: Callable[[], None] | None = None
         self._page_ready: Callable[[], None] | None = None
 
@@ -52,6 +53,15 @@ class AppBridge:
         if self._begin_window_drag is None:
             return
         self._begin_window_drag(float(grab_x), float(grab_y))
+
+    def _bind_begin_window_resize(self, begin_window_resize: Callable[[str, float], None]) -> None:
+        self._begin_window_resize = begin_window_resize
+
+    def begin_window_resize(self, edge: str, grab_y: float) -> None:
+        """The panel's top or bottom edge was pressed at grab_y, physical px inside the window."""
+        if self._begin_window_resize is None or edge not in ("top", "bottom"):
+            return
+        self._begin_window_resize(edge, float(grab_y))
 
     def preview_appearance(self, appearance: dict[str, object]) -> None:
         """Apply unsaved glass settings to the native window while the user edits them."""

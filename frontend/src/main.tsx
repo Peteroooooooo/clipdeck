@@ -6,6 +6,7 @@ import { applyAppearance, DEFAULT_APPEARANCE } from './app/appearance'
 import { installDesktopBackdrop } from './shared/ui/desktopBackdrop'
 import { installPanelSleep } from './shared/ui/panelSleep'
 import { installWindowDrag } from './shared/ui/windowDrag'
+import { installWindowResize } from './shared/ui/windowResize'
 
 // Resolve the theme before the first paint; App re-applies the saved appearance once it loads.
 applyAppearance(DEFAULT_APPEARANCE)
@@ -24,6 +25,7 @@ if ((window as Window & { pywebview?: unknown }).pywebview) {
 
 installDesktopBackdrop()
 installWindowDrag()
+installWindowResize()
 installPanelSleep()
 
 createRoot(document.getElementById('root')!).render(

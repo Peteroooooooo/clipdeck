@@ -709,6 +709,69 @@ def test_title_drag_is_elastic_unless_animations_are_off(monkeypatch):
     assert drags == [(controller.window, (60, 32), True), (controller.window, (10, 12), False)]
 
 
+def test_resized_span_moves_one_edge_within_the_work_area_and_minimum():
+    from backend.app.backdrop import resized_span
+
+    limits = {"top": 100, "bottom": 772, "min_height": 512, "work_top": 0, "work_bottom": 1040}
+    assert resized_span("bottom", 900, **limits) == (100, 900)
+    assert resized_span("bottom", 2000, **limits) == (100, 1040)
+    assert resized_span("bottom", 300, **limits) == (100, 612)
+    assert resized_span("top", 40, **limits) == (40, 772)
+    assert resized_span("top", -50, **limits) == (0, 772)
+    assert resized_span("top", 700, **limits) == (260, 772)
+    # Already past the work area (placed there before): shrinking works, it does not snap in.
+    assert resized_span("bottom", 1200, top=100, bottom=1100, min_height=512, work_top=0, work_bottom=1040) == (100, 1100)
+
+
+def test_stretching_the_panel_keeps_its_new_height(monkeypatch):
+    from backend.app import window as window_module
+    from backend.app.bridge import AppBridge
+
+    resizes: list[tuple[str, int, float]] = []
+    final_heights = iter([832.0, 832.0, 300.0])
+
+    def fake_resize(_window, edge, grab_y, *, min_height_dip):
+        resizes.append((edge, grab_y, min_height_dip))
+        return next(final_heights)
+
+    monkeypatch.setattr(window_module, "begin_window_resize", fake_resize)
+    saved: list[int] = []
+    bridge = AppBridge(SimpleNamespace())
+    controller = AppWindowController(
+        project_root=TEST_PROJECT_ROOT,
+        bridge=bridge,
+        snapshot_provider=lambda: {},
+        dev_mode=False,
+        on_panel_resized=saved.append,
+    )
+    controller.window = SimpleNamespace()
+    bridge._bind_begin_window_resize(controller.begin_resize)
+
+    bridge.begin_window_resize("bottom", 700.6)
+    bridge.begin_window_resize("top", 4)
+    bridge.begin_window_resize("left", 4)
+    bridge.begin_window_resize("top", 4)
+
+    assert resizes == [("bottom", 700, 480), ("top", 4, 480), ("top", 4, 480)]
+    # 832 window = 800 panel, unchanged the second time; a too-small report is clamped.
+    assert saved == [800, window_module.MIN_PANEL_HEIGHT]
+    assert controller.panel_height == window_module.MIN_PANEL_HEIGHT
+
+
+def test_saved_panel_height_is_clamped():
+    from backend.app.window import MIN_PANEL_HEIGHT
+    from backend.app.window import PANEL_HEIGHT
+    from backend.app.window import clamp_panel_height
+
+    assert clamp_panel_height(720.4) == 720
+    assert clamp_panel_height(10) == MIN_PANEL_HEIGHT
+    assert clamp_panel_height("tall") == PANEL_HEIGHT
+    controller = AppWindowController(
+        project_root=TEST_PROJECT_ROOT, bridge=SimpleNamespace(), snapshot_provider=lambda: {}, dev_mode=False, panel_height=99999
+    )
+    assert controller.panel_height == 4000
+
+
 def test_moves_are_only_sent_to_the_page_for_snapshot_glass(monkeypatch):
     from backend.app import window as window_module
 

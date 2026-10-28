@@ -396,6 +396,36 @@ html.is-desktop.has-backdrop:not(.glass-live) .glass-backdrop {
   background-repeat: no-repeat;
 }
 
+/* Grab strips on the panel's top and bottom edge for stretching its height: mostly in the
+   transparent shadow margin, a few px over the glass. */
+.window-resize-edge {
+  display: none;
+}
+
+html.is-desktop .window-resize-edge {
+  display: block;
+  position: fixed;
+  left: var(--shell-pad);
+  right: var(--shell-pad);
+  height: 12px;
+  z-index: 100;
+  cursor: ns-resize;
+}
+
+html.is-desktop .window-resize-edge[data-edge='top'] {
+  top: calc(var(--shell-pad) - 8px);
+}
+
+html.is-desktop .window-resize-edge[data-edge='bottom'] {
+  bottom: calc(var(--shell-pad) - 8px);
+}
+
+html.is-resizing,
+html.is-resizing * {
+  cursor: ns-resize !important;
+  user-select: none;
+}
+
 .view-frame {
   flex: 1;
   min-height: 0;
