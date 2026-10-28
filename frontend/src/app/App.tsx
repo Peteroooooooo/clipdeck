@@ -246,6 +246,8 @@ function App() {
           </motion.div>
           <ToastHost onAction={handleToastAction} onDismiss={handleDismissToast} toast={snapshot.toast} />
         </div>
+        <div aria-hidden="true" className="window-resize-edge" data-edge="top" />
+        <div aria-hidden="true" className="window-resize-edge" data-edge="bottom" />
       </main>
       </LiquidGlassContext.Provider>
     </MotionConfig>

@@ -32,6 +32,7 @@ BACKDROP_JPEG_QUALITY = 72
 
 MONITOR_DEFAULTTONEAREST = 2
 SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SM_SWAPBUTTON = 23
@@ -293,6 +294,77 @@ def begin_window_drag(window, grab: tuple[int, int], *, elastic: bool) -> None:
         ctypes.windll.dwmapi.DwmFlush()
 
 
+def begin_window_resize(window, edge: str, grab_y: int, *, min_height_dip: float) -> float | None:
+    """Stretch the window from its top or bottom edge until the button is released.
+
+    `grab_y` is the pressed point inside the window (physical pixels), so the edge keeps its
+    distance to the pointer instead of jumping to it. The window stays inside the monitor's work
+    area and no shorter than `min_height_dip`. Returns the final height in DIPs.
+    """
+    form = getattr(window, "native", None)
+    if form is None or wintypes is None or edge not in ("top", "bottom"):
+        return None
+    user32 = ctypes.windll.user32
+    hwnd = wintypes.HWND(form.Handle.ToInt64())
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+    work_area = _work_area_for_point(((left + right) // 2, (top + bottom) // 2))
+    if work_area is None:
+        return None
+    scale = _dpi_scale(form.Handle.ToInt64())
+    min_height = round(min_height_dip * scale)
+    offset = grab_y if edge == "top" else grab_y - (bottom - top)
+
+    button = VK_RBUTTON if user32.GetSystemMetrics(SM_SWAPBUTTON) else VK_LBUTTON
+    span = (top, bottom)
+    while user32.GetAsyncKeyState(button) & 0x8000:
+        point = _cursor_point()
+        if point is not None:
+            following = resized_span(
+                edge,
+                point[1] - offset,
+                top=top,
+                bottom=bottom,
+                min_height=min_height,
+                work_top=work_area[1],
+                work_bottom=work_area[3],
+            )
+            if following != span:
+                span = following
+                user32.SetWindowPos(
+                    hwnd, None, left, span[0], right - left, span[1] - span[0], SWP_NOZORDER | SWP_NOACTIVATE
+                )
+        ctypes.windll.dwmapi.DwmFlush()
+    return (span[1] - span[0]) / scale
+
+
+def set_window_height(window, height_dip: float) -> None:
+    form = getattr(window, "native", None)
+    if form is None or wintypes is None:
+        return
+    hwnd = form.Handle.ToInt64()
+    rect = wintypes.RECT()
+    user32 = ctypes.windll.user32
+    if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+        return
+    height = round(height_dip * _dpi_scale(hwnd))
+    user32.SetWindowPos(
+        wintypes.HWND(hwnd), None, 0, 0, rect.right - rect.left, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+    )
+
+
+def resized_span(
+    edge: str, edge_y: int, *, top: int, bottom: int, min_height: int, work_top: int, work_bottom: int
+) -> tuple[int, int]:
+    """New (top, bottom) of a window whose `edge` is pulled to `edge_y`; the other edge stays put.
+    A window already reaching past the work area is not snapped back into it."""
+    if edge == "top":
+        return max(min(work_top, top), min(edge_y, bottom - min_height)), bottom
+    return top, min(max(work_bottom, bottom), max(edge_y, top + min_height))
+
+
 # Windows' host backdrop has one blur strength (about this many DIPs). In live mode the Backdrop
 # Blur setting fades it in up to that point instead of changing its radius.
 LIVE_FULL_BLUR_DIP = 12
@@ -427,12 +499,15 @@ def move_window_near_pointer(window) -> None:
     if work_area is None:
         return
 
+    # A panel stretched on a taller monitor still has to fit this one.
+    fitted_height = min(height, work_area[3] - work_area[1])
     x, y = place_rect_near_anchor(
         anchor=anchor,
-        size=(width, height),
+        size=(width, fitted_height),
         work_area=work_area,
     )
-    user32.SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+    flags = SWP_NOZORDER | SWP_NOACTIVATE | (SWP_NOSIZE if fitted_height == height else 0)
+    user32.SetWindowPos(hwnd, None, x, y, width, fitted_height, flags)
 
 
 def place_rect_near_anchor(

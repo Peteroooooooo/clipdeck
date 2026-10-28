@@ -31,6 +31,7 @@ type WindowApi = {
   confirm_clear_all_history: () => Promise<boolean>
   preview_appearance: (appearance: AppearanceSettings) => Promise<void>
   begin_window_drag: (grabX: number, grabY: number) => Promise<void>
+  begin_window_resize?: (edge: 'top' | 'bottom', grabY: number) => Promise<void>
   page_ready?: () => Promise<void>
 }
 
@@ -647,6 +648,9 @@ export const desktopApi = {
   },
   beginWindowDrag(grabX: number, grabY: number) {
     return getWindowApi().begin_window_drag(grabX, grabY)
+  },
+  beginWindowResize(edge: 'top' | 'bottom', grabY: number) {
+    return getWindowApi().begin_window_resize?.(edge, grabY) ?? Promise.resolve()
   },
   pageReady() {
     return getWindowApi().page_ready?.() ?? Promise.resolve()

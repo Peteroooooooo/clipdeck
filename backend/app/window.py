@@ -12,10 +12,12 @@ from .backdrop import CONCEAL_SCALE
 from .backdrop import GLASS_LIVE
 from .backdrop import REVEAL_MS
 from .backdrop import begin_window_drag
+from .backdrop import begin_window_resize
 from .backdrop import capture_desktop_backdrop
 from .backdrop import install_glass_backdrop
 from .backdrop import live_blur_strength
 from .backdrop import move_window_near_pointer
+from .backdrop import set_window_height
 from .backdrop import window_origin
 from .backdrop import window_position_payload
 from .bridge import AppBridge
@@ -23,6 +25,20 @@ from .bridge import AppBridge
 
 # Must match --shell-pad in frontend/src/index.css.
 WINDOW_SHADOW_MARGIN = 16
+
+# The page panel's size in DIPs; only its height can be stretched.
+PANEL_WIDTH = 440
+PANEL_HEIGHT = 640
+MIN_PANEL_HEIGHT = 448
+MAX_PANEL_HEIGHT = 4000
+
+
+def clamp_panel_height(height: object) -> int:
+    try:
+        value = int(round(float(height)))
+    except (TypeError, ValueError, OverflowError):
+        return PANEL_HEIGHT
+    return max(MIN_PANEL_HEIGHT, min(MAX_PANEL_HEIGHT, value))
 
 # A normal launch waits for the page to settle after it has loaded, but never longer than this.
 PAGE_READY_TIMEOUT_S = 5.0
@@ -72,8 +88,13 @@ class AppWindowController:
         warm_webview=None,
         watch_page=None,
         window_icon: str | None = None,
+        panel_height: int | None = None,
+        on_panel_resized=None,
     ) -> None:
         self.project_root = project_root
+        # None until the user stretches the panel: the window keeps pywebview's default size.
+        self.panel_height = None if panel_height is None else clamp_panel_height(panel_height)
+        self.on_panel_resized = on_panel_resized
         self.bridge = bridge
         self.snapshot_provider = snapshot_provider
         self.dev_mode = dev_mode
@@ -120,11 +141,11 @@ class AppWindowController:
             title="ClipDeck",
             url=url,
             js_api=self.bridge,
-            # The page panel is 440x640; the extra WINDOW_SHADOW_MARGIN on each side is transparent
-            # room for its floating shadow.
-            width=440 + 2 * WINDOW_SHADOW_MARGIN,
-            height=640 + 2 * WINDOW_SHADOW_MARGIN,
-            min_size=(380, 480),
+            # The extra WINDOW_SHADOW_MARGIN on each side of the panel is transparent room for its
+            # floating shadow.
+            width=PANEL_WIDTH + 2 * WINDOW_SHADOW_MARGIN,
+            height=PANEL_HEIGHT + 2 * WINDOW_SHADOW_MARGIN,
+            min_size=(380, MIN_PANEL_HEIGHT + 2 * WINDOW_SHADOW_MARGIN),
             hidden=True,
             on_top=self._is_always_on_top,
             frameless=True,
@@ -142,6 +163,8 @@ class AppWindowController:
         self.bridge._bind_is_always_on_top(lambda: self.is_always_on_top)
         self.bridge._bind_preview_appearance(self.apply_appearance)
         self.bridge._bind_begin_window_drag(self.begin_drag)
+        if hasattr(self.bridge, "_bind_begin_window_resize"):
+            self.bridge._bind_begin_window_resize(self.begin_resize)
         if hasattr(self.bridge, "_bind_conceal_window"):
             self.bridge._bind_conceal_window(lambda: self.hide(animated=True))
         if hasattr(self.bridge, "_bind_page_ready"):
@@ -299,6 +322,22 @@ class AppWindowController:
         elastic = bool(self._appearance.get("animations", True))
         begin_window_drag(self.window, (int(grab_x), int(grab_y)), elastic=elastic)
 
+    def begin_resize(self, edge: str, grab_y: float) -> None:
+        """Stretch the panel from its top or bottom edge; the new height is kept for next time."""
+        if self.window is None:
+            return
+        window_height = begin_window_resize(
+            self.window, edge, int(grab_y), min_height_dip=MIN_PANEL_HEIGHT + 2 * WINDOW_SHADOW_MARGIN
+        )
+        if window_height is None:
+            return
+        height = clamp_panel_height(window_height - 2 * WINDOW_SHADOW_MARGIN)
+        if height == self.panel_height:
+            return
+        self.panel_height = height
+        if self.on_panel_resized is not None:
+            self.on_panel_resized(height)
+
     def _handle_moved(self) -> None:
         if self.glass_mode == GLASS_LIVE:
             # Only the snapshot is lined up by the page; the live glass follows by itself.
@@ -440,6 +479,9 @@ class AppWindowController:
             return
         if self.window_icon:
             set_window_icon(self.window, self.window_icon)
+        if self.panel_height is not None:
+            # pywebview's own size is off once the frame is removed; set the saved one exactly.
+            set_window_height(self.window, self.panel_height + 2 * WINDOW_SHADOW_MARGIN)
         appearance = self.appearance_provider()
         self._appearance = dict(appearance)
         self._corner_radius = float(appearance.get("cornerRadius", 24))

@@ -85,6 +85,9 @@ def main(argv: list[str] | None = None) -> None:
         on_blur_hide=state.clear_paste_target,
         appearance_provider=lambda: state.settings.appearance.to_dict(),
         window_icon=resolve_window_icon(project_root=project_root),
+        # Kept beside the app's own settings, not in a user-chosen history folder.
+        panel_height=state.bootstrap_storage.load_panel_height(),
+        on_panel_resized=state.bootstrap_storage.save_panel_height,
     )
     window_controller.create()
 
