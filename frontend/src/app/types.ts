@@ -88,6 +88,8 @@ export interface SettingsState {
   recordImages: boolean
   recordFiles: boolean
   storagePath: string
+  /** Folder the save button on image clips writes to; the Desktop by default. */
+  imageSavePath: string
   shortcuts: ShortcutBindings
   appearance: AppearanceSettings
 }

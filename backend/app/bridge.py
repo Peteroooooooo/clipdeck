@@ -110,6 +110,11 @@ class AppBridge:
         self._state.copy_record(record_id)
         return self._snapshot()
 
+    def save_image(self, record_id: str) -> dict[str, object]:
+        """Saves an image clip into the image save folder; the window stays open."""
+        self._state.save_image(record_id)
+        return self._snapshot()
+
     def save_settings(self, settings: dict[str, object], pause_recording: bool) -> dict[str, object]:
         self._state.save_settings(settings, pause_recording)
         return self._snapshot()

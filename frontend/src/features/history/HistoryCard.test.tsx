@@ -47,6 +47,62 @@ describe('HistoryCard', () => {
     expect(onDelete).toHaveBeenCalledWith('rich-1')
   })
 
+  test('image clips get a save button left of the others; other clips do not', async () => {
+    const user = userEvent.setup()
+    const onSaveImage = vi.fn()
+    const image = {
+      id: 'image-1',
+      type: 'image' as const,
+      summary: 'Image 10 x 10',
+      detail: 'Image 10 x 10',
+      meta: 'Image',
+      sourceApp: 'Snipping Tool',
+      sourceGlyph: 'ST',
+      pinned: false,
+      createdAt: '2026-10-28T15:30:12',
+      updatedAt: '2026-10-28T15:30:12',
+      contentHash: 'hash-image-1',
+      plainText: null,
+      richText: null,
+      imagePath: 'C:/temp/image.png',
+      imageWidth: 10,
+      imageHeight: 10,
+      filePaths: [],
+    }
+
+    const { container, rerender } = render(
+      <HistoryCard
+        isActive={false}
+        isPinned={false}
+        onActivate={vi.fn()}
+        onCopy={vi.fn()}
+        onDelete={vi.fn()}
+        onPinToggle={vi.fn()}
+        onSaveImage={onSaveImage}
+        record={image}
+      />,
+    )
+
+    const buttons = container.querySelectorAll('.card-actions .action-button')
+    expect(buttons[0]).toHaveAccessibleName('Save image')
+    await user.click(screen.getByRole('button', { name: 'Save image' }))
+    expect(onSaveImage).toHaveBeenCalledWith('image-1')
+
+    rerender(
+      <HistoryCard
+        isActive={false}
+        isPinned={false}
+        onActivate={vi.fn()}
+        onCopy={vi.fn()}
+        onDelete={vi.fn()}
+        onPinToggle={vi.fn()}
+        onSaveImage={onSaveImage}
+        record={{ ...image, id: 'text-1', type: 'text', imagePath: null, plainText: 'hi' }}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Save image' })).not.toBeInTheDocument()
+  })
+
   test('renders an image thumbnail when the record contains a saved preview path', () => {
     render(
       <HistoryCard

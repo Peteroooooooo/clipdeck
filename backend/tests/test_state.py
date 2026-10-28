@@ -207,6 +207,60 @@ def test_copy_record_keeps_copy_only_behavior_without_pasting(tmp_path: Path) ->
     assert clipboard_service.paste_shortcuts == 0
 
 
+def test_save_image_copies_the_png_into_the_image_save_folder_without_overwriting(tmp_path: Path) -> None:
+    state = build_state(tmp_path)
+    settings = state.settings.to_dict()
+    settings["imageSavePath"] = str(tmp_path / "saved")
+    state.save_settings(settings, pause_recording=False)
+    created = state.ingest_capture(
+        ClipboardCapture(image_bytes=b"png-bytes", image_width=10, image_height=10, source_app="Snipping Tool"),
+        captured_at="2026-10-28T15:30:12.345",
+    )
+    record_id = created["recentRecords"][0]["id"]
+
+    first = state.save_image(record_id)
+    second = state.save_image(record_id)
+
+    first_file = tmp_path / "saved" / "ClipDeck 2026-10-28 15-30-12.png"
+    second_file = tmp_path / "saved" / "ClipDeck 2026-10-28 15-30-12 (2).png"
+    assert first_file.read_bytes() == b"png-bytes"
+    assert second_file.read_bytes() == b"png-bytes"
+    assert first["toast"]["title"] == "图片已保存"
+    assert first["toast"]["message"] == str(first_file)
+    assert second["toast"]["message"] == str(second_file)
+
+
+def test_save_image_reports_a_missing_image_file(tmp_path: Path) -> None:
+    state = build_state(tmp_path)
+    settings = state.settings.to_dict()
+    settings["imageSavePath"] = str(tmp_path / "saved")
+    state.save_settings(settings, pause_recording=False)
+    created = state.ingest_capture(
+        ClipboardCapture(image_bytes=b"png-bytes", image_width=10, image_height=10, source_app="Snipping Tool"),
+        captured_at="2026-10-28T15:30:12",
+    )
+    record = created["recentRecords"][0]
+    image_uri_to_path(record["imagePath"]).unlink()
+
+    snapshot = state.save_image(record["id"])
+
+    assert snapshot["toast"]["tone"] == "danger"
+    assert not (tmp_path / "saved").exists() or not any((tmp_path / "saved").iterdir())
+
+
+def test_image_save_folder_defaults_to_the_desktop_for_older_settings(tmp_path: Path) -> None:
+    from backend.app.runtime import resolve_desktop_path
+
+    state = build_state(tmp_path)
+    settings = state.settings.to_dict()
+    settings.pop("imageSavePath")
+
+    state.save_settings(settings, pause_recording=False)
+
+    assert state.settings.image_save_path == str(resolve_desktop_path())
+    assert build_state(tmp_path).settings.image_save_path == str(resolve_desktop_path())
+
+
 def test_clear_all_history_removes_pinned_and_recent_records(tmp_path: Path) -> None:
     state = build_state(tmp_path)
 

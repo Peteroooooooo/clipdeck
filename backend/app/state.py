@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from copy import deepcopy
 from datetime import datetime
@@ -21,8 +22,10 @@ from .models import SettingsState
 from .models import ShortcutBindings
 from .models import ToastMessage
 from .models import default_settings
+from .models import image_save_path_from_payload
 from .runtime import resolve_default_storage_path
 from .storage import AppStorage
+from .storage import resolve_local_path
 
 
 SnapshotListener = Callable[[dict[str, object]], None]
@@ -261,6 +264,33 @@ class AppState:
     def copy_record(self, record_id: str) -> dict[str, object]:
         return self._write_record_to_clipboard(record_id, as_plain_text=False, paste=False)
 
+    def save_image(self, record_id: str) -> dict[str, object]:
+        """Copies an image clip's PNG into the image save folder, under a name from when it was
+        copied; never overwrites a file already there."""
+        with self._lock:
+            record = self._find_record(record_id)
+            if record is None or record.type != "image":
+                return self.snapshot()
+            source = resolve_local_path(record.image_path)
+            folder = Path(self.settings.image_save_path)
+            if source is None or not source.is_file():
+                self.toast = self._make_toast(title="图片保存失败", message="这张图片的文件已不存在。", tone="danger")
+            else:
+                try:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    target = _unused_path(folder, _image_file_stem(record.created_at), source.suffix or ".png")
+                    shutil.copyfile(source, target)
+                except OSError:
+                    self.toast = self._make_toast(
+                        title="图片保存失败",
+                        message=f"无法写入 {folder}，可在设置里换一个保存位置。",
+                        tone="danger",
+                    )
+                else:
+                    self.toast = self._make_toast(title="图片已保存", message=str(target), tone="success")
+            snapshot = self.snapshot()
+        return self._notify(snapshot)
+
     def save_settings(self, settings: dict[str, object], pause_recording: bool) -> dict[str, object]:
         with self._lock:
             self.settings = SettingsState(
@@ -283,6 +313,7 @@ class AppState:
                 appearance=AppearanceSettings.from_dict(
                     settings["appearance"] if isinstance(settings.get("appearance"), dict) else None
                 ),
+                image_save_path=image_save_path_from_payload(settings.get("imageSavePath")),
             )
             self.is_recording_paused = pause_recording
             self.view = "panel"
@@ -479,6 +510,23 @@ class AppState:
     def _default_settings() -> SettingsState:
         default_storage_path = resolve_default_storage_path(project_root=Path(__file__).resolve().parents[2])
         return default_settings(storage_path=str(default_storage_path))
+
+
+def _image_file_stem(created_at: str) -> str:
+    try:
+        moment = datetime.fromisoformat(created_at)
+    except ValueError:
+        moment = datetime.now()
+    return f"ClipDeck {moment:%Y-%m-%d %H-%M-%S}"
+
+
+def _unused_path(folder: Path, stem: str, suffix: str) -> Path:
+    target = folder / f"{stem}{suffix}"
+    counter = 2
+    while target.exists():
+        target = folder / f"{stem} ({counter}){suffix}"
+        counter += 1
+    return target
 
 
 def _same_folder(left: Path, right: Path) -> bool:

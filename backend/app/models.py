@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+from .runtime import resolve_desktop_path
+
 DEFAULT_HISTORY_LIMIT = 25
 MIN_HISTORY_LIMIT = 1
 MAX_HISTORY_LIMIT = 5000
@@ -323,6 +325,8 @@ class SettingsState:
     storage_path: str
     shortcuts: ShortcutBindings
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
+    # Folder the save button on image clips writes to.
+    image_save_path: str = field(default_factory=lambda: str(resolve_desktop_path()))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -335,6 +339,7 @@ class SettingsState:
             "recordImages": self.record_images,
             "recordFiles": self.record_files,
             "storagePath": self.storage_path,
+            "imageSavePath": self.image_save_path,
             "shortcuts": self.shortcuts.to_dict(),
             "appearance": self.appearance.to_dict(),
         }
@@ -353,7 +358,15 @@ class SettingsState:
             storage_path=str(payload["storagePath"]),
             shortcuts=ShortcutBindings.from_dict(dict(payload["shortcuts"])),
             appearance=AppearanceSettings.from_dict(_optional_dict(payload.get("appearance"))),
+            image_save_path=image_save_path_from_payload(payload.get("imageSavePath")),
         )
+
+
+def image_save_path_from_payload(value: object) -> str:
+    """Settings saved before the image save folder existed, or with it blanked, use the Desktop."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return str(resolve_desktop_path())
 
 
 @dataclass(slots=True)

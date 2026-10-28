@@ -20,6 +20,7 @@ type WindowApi = {
   clear_all_history: () => Promise<AppSnapshot>
   clear_unpinned_history: () => Promise<AppSnapshot>
   copy_record: (recordId: string) => Promise<AppSnapshot>
+  save_image: (recordId: string) => Promise<AppSnapshot>
   trigger_primary_action: (recordId: string) => Promise<AppSnapshot>
   paste_plain_text: (recordId: string) => Promise<AppSnapshot>
   save_settings: (settings: SettingsState, pauseRecording: boolean) => Promise<AppSnapshot>
@@ -47,6 +48,7 @@ const defaultSettings: SettingsState = {
   recordImages: true,
   recordFiles: true,
   storagePath: '%LOCALAPPDATA%\\ClipDeck\\data',
+  imageSavePath: '%USERPROFILE%\\Desktop',
   shortcuts: {
     togglePanel: 'Alt + Space',
     primaryAction: 'Enter',
@@ -489,6 +491,22 @@ function fallbackApi(): WindowApi {
         }
       })
     },
+    async save_image(recordId) {
+      return applyFallbackMutation((draft) => {
+        const record = findRecord(draft, recordId)
+        if (!record || record.type !== 'image') {
+          return
+        }
+
+        draft.toast = nextToast({
+          id: '',
+          title: '图片已保存',
+          message: `${draft.settings.imageSavePath}\\ClipDeck ${record.createdAt.slice(0, 19).replace('T', ' ').replace(/:/g, '-')}.png`,
+          tone: 'success',
+          actionKind: null,
+        })
+      })
+    },
     async trigger_primary_action(recordId) {
       return applyFallbackMutation((draft) => {
         const record = findRecord(draft, recordId)
@@ -596,6 +614,9 @@ export const desktopApi = {
   },
   copyRecord(recordId: string) {
     return getWindowApi().copy_record(recordId)
+  },
+  saveImage(recordId: string) {
+    return getWindowApi().save_image(recordId)
   },
   triggerPrimaryAction(recordId: string) {
     return getWindowApi().trigger_primary_action(recordId)

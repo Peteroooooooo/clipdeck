@@ -32,6 +32,38 @@ def resolve_default_storage_path(
     return runtime_executable.parent / "data"
 
 
+def resolve_desktop_path() -> Path:
+    """The user's Desktop as Explorer shows it, which OneDrive or a policy may have moved away
+    from %USERPROFILE%\\Desktop."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [
+                    ("Data1", wintypes.DWORD),
+                    ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD),
+                    ("Data4", ctypes.c_ubyte * 8),
+                ]
+
+            # FOLDERID_Desktop {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+            folder_id = GUID(
+                0xB4BFCC3A, 0xDB2C, 0x424C, (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41)
+            )
+            buffer = ctypes.c_wchar_p()
+            if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(buffer)) == 0:
+                try:
+                    if buffer.value:
+                        return Path(buffer.value)
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(buffer)
+        except (AttributeError, OSError):
+            pass
+    return Path.home() / "Desktop"
+
+
 def resolve_webview_data_path(*, env: Mapping[str, str] | None = None, app_name: str = APP_NAME) -> Path:
     """Where WebView2 keeps its data between runs.
 
