@@ -1,25 +1,21 @@
 import { MagnifyingGlass, PushPin } from '@phosphor-icons/react'
+import { useT } from '../../app/i18n'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
 
 // Stand-in clips that drift under the sample glass, so refraction, frost and saturation have
 // something to act on (in live mode the real search bar floats over empty glass).
-const SAMPLE_ROWS = [
-  { tone: 'accent', title: 'Quarterly report draft', meta: 'Word · 2m ago' },
-  { tone: 'success', title: 'git push -u origin main', meta: 'Terminal · 5m ago' },
-  { tone: 'warning', title: 'Meeting moved to 3:30 PM', meta: 'Mail · 12m ago' },
-  { tone: 'danger', title: 'https://example.com/design', meta: 'Chrome · 20m ago' },
-  { tone: 'accent', title: '复制的中文段落示例', meta: 'Notes · 1h ago' },
-] as const
+const SAMPLE_TONES = ['accent', 'success', 'warning', 'danger', 'accent'] as const
 
 function SampleRows() {
+  const t = useT()
   return (
     <div className="liquid-preview-rows">
-      {SAMPLE_ROWS.map((row) => (
-        <div className="liquid-preview-row" key={row.title}>
-          <span className={`liquid-preview-dot is-${row.tone}`} />
+      {t.appearance.previewRows.map(([title, meta], index) => (
+        <div className="liquid-preview-row" key={title}>
+          <span className={`liquid-preview-dot is-${SAMPLE_TONES[index % SAMPLE_TONES.length]}`} />
           <span className="liquid-preview-text">
-            <strong>{row.title}</strong>
-            <span>{row.meta}</span>
+            <strong>{title}</strong>
+            <span>{meta}</span>
           </span>
         </div>
       ))}
@@ -29,11 +25,12 @@ function SampleRows() {
 
 /** Live sample of the liquid glass, rendered with the unsaved settings. */
 export function LiquidPreview() {
+  const t = useT()
   // A fragment, not a wrapper: the stage is sticky within the Liquid Glass section, so it stays
   // in view while the sliders below it are dragged.
   return (
     <>
-      <p className="liquid-preview-hint">Preview · hover the glass to feel the magnet</p>
+      <p className="liquid-preview-hint">{t.appearance.previewHint}</p>
       <div aria-hidden="true" className="liquid-preview-stage" data-testid="liquid-preview">
         <div className="liquid-preview-track">
           <SampleRows />
@@ -42,7 +39,7 @@ export function LiquidPreview() {
         <div className="liquid-preview-glass magnet-group">
           <LiquidGlass className="liquid-preview-search" magnetic>
             <MagnifyingGlass size={15} weight="bold" />
-            <span>Search clips</span>
+            <span>{t.panel.searchPlaceholder}</span>
           </LiquidGlass>
           <LiquidGlass className="liquid-preview-button" magnetic>
             <PushPin size={16} weight="fill" />

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import ctypes
+import threading
+import time
 
 import pystray
 from PIL import Image
@@ -10,16 +12,47 @@ from .brand_icon import load_icon
 from .state import AppState
 
 APP_NAME = "ClipDeck"
-TRAY_TITLE = "ClipDeck 剪贴板历史"
+TRAY_TITLE = "ClipDeck"
+
+# The tray speaks the app's language (Settings > General > Language).
+TEXTS = {
+    "zh": {
+        "show": "显示主面板",
+        "pause": "暂停记录",
+        "resume": "继续记录",
+        "settings": "打开设置",
+        "clear": "清空全部历史",
+        "exit": f"退出 {APP_NAME}",
+        "confirm_clear": "确定要清空全部历史记录吗？固定和最近记录都会被删除。",
+        "hotkey_failed_title": "快捷键不可用",
+        "hotkey_failed": "{shortcut} 已被其他程序占用。可以从托盘图标打开 ClipDeck，并在设置里换一个快捷键。",
+    },
+    "en": {
+        "show": "Show Panel",
+        "pause": "Pause Recording",
+        "resume": "Resume Recording",
+        "settings": "Open Settings",
+        "clear": "Clear All History",
+        "exit": f"Exit {APP_NAME}",
+        "confirm_clear": "Clear all clipboard history? Pinned and recent clips will be removed.",
+        "hotkey_failed_title": "Shortcut unavailable",
+        "hotkey_failed": "{shortcut} is taken by another app. Open ClipDeck from the tray icon and choose another shortcut in Settings.",
+    },
+}
 
 
-def menu_labels(*, is_recording_paused: bool) -> list[str]:
+def texts(language: str) -> dict[str, str]:
+    return TEXTS.get(language, TEXTS["en"])
+
+
+def menu_labels(*, is_recording_paused: bool, language: str = "zh") -> list[str]:
+    text = texts(language)
     return [
-        "显示主面板",
-        "继续记录" if is_recording_paused else "暂停记录",
-        "打开设置",
-        "清空全部历史",
-        f"退出 {APP_NAME}",
+        text["show"],
+        text["resume"] if is_recording_paused else text["pause"],
+        text["settings"],
+        text["clear"],
+        text["exit"],
     ]
 
 
@@ -50,13 +83,10 @@ def use_dark_menus() -> bool:
         return False
 
 
-def confirm_clear_all_history() -> bool:
-    if not hasattr(ctypes, "windll"):
-        return True
-
+def confirm_clear_all_history(language: str = "zh") -> bool:
     result = ctypes.windll.user32.MessageBoxW(
         None,
-        "确定要清空全部历史记录吗？固定和最近记录都会被删除。",
+        texts(language)["confirm_clear"],
         APP_NAME,
         0x00000001 | 0x00000030,
     )
@@ -71,13 +101,13 @@ class TrayController:
         show_history: Callable[[], None],
         show_settings: Callable[[], None],
         exit_app: Callable[[], None],
-        confirm_clear: Callable[[], bool] = confirm_clear_all_history,
+        confirm_clear: Callable[[], bool] | None = None,
     ) -> None:
         self.state = state
         self.show_history = show_history
         self.show_settings = show_settings
         self.exit_app = exit_app
-        self.confirm_clear = confirm_clear
+        self.confirm_clear = confirm_clear or (lambda: confirm_clear_all_history(self._language()))
         self.icon = pystray.Icon(
             "clipboard-history",
             icon=self._create_icon(),
@@ -92,18 +122,43 @@ class TrayController:
     def stop(self) -> None:
         self.icon.stop()
 
+    def notify_hotkey_failed(self, shortcut: str) -> None:
+        """A Windows notification from the tray icon. Reported at launch, possibly before the
+        icon is up, so it waits (briefly) for the icon first."""
+        text = texts(self._language())
+        message = text["hotkey_failed"].format(shortcut=shortcut)
+
+        def show() -> None:
+            for _ in range(50):
+                if self.icon.visible:
+                    break
+                time.sleep(0.1)
+            try:
+                self.icon.notify(message, text["hotkey_failed_title"])
+            except Exception:
+                pass
+
+        threading.Thread(target=show, name="tray-notify", daemon=True).start()
+
+    def _language(self) -> str:
+        settings = getattr(self.state, "settings", None)
+        return getattr(settings, "language", "zh")
+
+    def _label(self, index: int):
+        # Read when the menu opens, so it follows the language and the recording state.
+        return lambda _item: menu_labels(
+            is_recording_paused=self.state.is_recording_paused, language=self._language()
+        )[index]
+
     def _create_menu(self) -> pystray.Menu:
         return pystray.Menu(
-            pystray.MenuItem(menu_labels(is_recording_paused=False)[0], self._handle_open_history),
-            pystray.MenuItem(
-                lambda _item: menu_labels(is_recording_paused=self.state.is_recording_paused)[1],
-                self._handle_toggle_pause,
-            ),
-            pystray.MenuItem(menu_labels(is_recording_paused=False)[2], self._handle_open_settings),
+            pystray.MenuItem(self._label(0), self._handle_open_history, default=True),
+            pystray.MenuItem(self._label(1), self._handle_toggle_pause),
+            pystray.MenuItem(self._label(2), self._handle_open_settings),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(menu_labels(is_recording_paused=False)[3], self._handle_clear_all_history),
+            pystray.MenuItem(self._label(3), self._handle_clear_all_history),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(menu_labels(is_recording_paused=False)[4], self._handle_exit),
+            pystray.MenuItem(self._label(4), self._handle_exit),
         )
 
     @staticmethod

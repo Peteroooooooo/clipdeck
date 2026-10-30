@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AnimatePresence, LayoutGroup, motion, useAnimate } from 'motion/react'
 import { GearSix, MagnifyingGlass, X } from '@phosphor-icons/react'
+import { recordTitle, sourceName, useT, type Strings } from '../../app/i18n'
 import { matchesShortcut } from '../../app/shortcuts'
 import type { HistoryRecord, HistoryRecordType, ShortcutBindings } from '../../app/types'
 import { AppLogo } from '../../shared/ui/AppLogo'
@@ -9,16 +10,13 @@ import { playLiquidRipple } from '../../shared/ui/liquidRipple'
 import { useLensDrop, useLensGroup } from '../../shared/ui/liquid/useLiquidLens'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
 import { SPRING_SMOOTH, SPRING_SNAPPY } from '../../shared/ui/motionTokens'
+import { useRecBlink } from '../../shared/ui/recBlink'
+import { timeAgo } from '../../shared/utils/timeAgo'
 import { HistoryCard } from '../history/HistoryCard'
 
 type FilterKey = 'all' | 'text' | 'image' | 'file'
 
-const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'text', label: 'Text' },
-  { key: 'image', label: 'Images' },
-  { key: 'file', label: 'Files' },
-]
+const FILTERS: FilterKey[] = ['all', 'text', 'image', 'file']
 
 const FILTER_TYPES: Record<FilterKey, HistoryRecordType[] | null> = {
   all: null,
@@ -101,8 +99,8 @@ function layoutBox(element: HTMLElement) {
   return { left, top, width: element.offsetWidth, height: element.offsetHeight }
 }
 
-function matchesQuery(record: HistoryRecord, query: string) {
-  const searchable = `${record.summary} ${record.detail} ${record.sourceApp}`.toLowerCase()
+function matchesQuery(record: HistoryRecord, query: string, t: Strings) {
+  const searchable = `${recordTitle(record, t)} ${record.detail} ${sourceName(record, t)}`.toLowerCase()
   return searchable.includes(query.toLowerCase())
 }
 
@@ -189,6 +187,7 @@ export function QuickPanelView({
   onClearHistory,
   onHideWindow,
 }: QuickPanelViewProps) {
+  const t = useT()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterKey>('all')
   const deferredQuery = useDeferredValue(query)
@@ -206,6 +205,16 @@ export function QuickPanelView({
   const shouldScrollActiveIntoViewRef = useRef(false)
   const { groupRef: headerGroupRef, lensRef: headerLensRef } = useLensGroup<HTMLDivElement>()
   const { groupRef: filterGroupRef, dropRef: filterDropRef } = useLensDrop<HTMLDivElement>(filter)
+  const recDotRef = useRef<HTMLSpanElement | null>(null)
+  useRecBlink(recDotRef, !isRecordingPaused)
+
+  // Relative times are worked out when the panel is shown, so "just now" is never stale.
+  const [shownAt, setShownAt] = useState(() => Date.now())
+  useEffect(() => {
+    const refresh = () => setShownAt(Date.now())
+    window.addEventListener('clipdeck:reveal', refresh)
+    return () => window.removeEventListener('clipdeck:reveal', refresh)
+  }, [])
 
   const pinPulse = useTurnOnCounter(isAlwaysOnTop)
   const recordPulse = useTurnOnCounter(!isRecordingPaused)
@@ -235,7 +244,7 @@ export function QuickPanelView({
     }
   }, [pinPulse])
 
-  const isVisible = (record: HistoryRecord) => matchesFilter(record, filter) && matchesQuery(record, deferredQuery)
+  const isVisible = (record: HistoryRecord) => matchesFilter(record, filter) && matchesQuery(record, deferredQuery, t)
   const visiblePinned = pinnedRecords.filter(isVisible)
   const visibleRecent = recentRecords.filter(isVisible)
   const allCards = [...visiblePinned, ...visibleRecent]
@@ -477,10 +486,11 @@ export function QuickPanelView({
       onPrimaryAction={onPrimaryAction}
       onSaveImage={onSaveImage}
       record={record}
+      timeLabel={timeAgo(record.updatedAt, t.time, Math.max(shownAt, Date.parse(record.updatedAt) || 0))}
     />
   )
 
-  const recordingLabel = isRecordingPaused ? 'Resume recording' : 'Pause recording'
+  const recordingLabel = isRecordingPaused ? t.panel.resumeRecording : t.panel.pauseRecording
 
   return (
     <section className="panel-shell" onKeyDown={handleKeyDown} ref={panelRef} tabIndex={-1}>
@@ -491,11 +501,11 @@ export function QuickPanelView({
       <header className="titlebar window-drag-region magnet-group">
         <LiquidGlass className={`pin-glass is-raised ${isAlwaysOnTop ? 'is-on' : ''}`} magnetic>
           <button
-            aria-label="Always on top"
+            aria-label={t.panel.alwaysOnTop}
             aria-pressed={isAlwaysOnTop}
             className="pin-button"
             onClick={onToggleAlwaysOnTop}
-            title={isAlwaysOnTop ? 'Disable always on top' : 'Enable always on top'}
+            title={isAlwaysOnTop ? t.panel.disableOnTop : t.panel.enableOnTop}
             type="button"
           >
             <PinGlyph ref={pinGlyphRef} />
@@ -504,18 +514,18 @@ export function QuickPanelView({
 
         <LiquidGlass className="filter-glass is-raised" magnetic>
           {/* The selected tab sits under a drop of clear glass that slides between tabs. */}
-          <div aria-label="Filter by type" className="segmented" ref={filterGroupRef} role="tablist">
-            {FILTERS.map((item) => (
+          <div aria-label={t.panel.filterByType} className="segmented" ref={filterGroupRef} role="tablist">
+            {FILTERS.map((key) => (
               <button
-                aria-selected={filter === item.key}
-                className={`segment ${filter === item.key ? 'is-selected' : ''}`}
+                aria-selected={filter === key}
+                className={`segment ${filter === key ? 'is-selected' : ''}`}
                 data-lens=""
-                key={item.key}
-                onClick={() => setFilter(item.key)}
+                key={key}
+                onClick={() => setFilter(key)}
                 role="tab"
                 type="button"
               >
-                <span className="segment-label">{item.label}</span>
+                <span className="segment-label">{t.panel.filters[key]}</span>
               </button>
             ))}
             <LiquidGlass className="segment-drop" ref={filterDropRef} variant="lens" />
@@ -527,12 +537,12 @@ export function QuickPanelView({
           <div className="lens-group" ref={headerGroupRef}>
             <button
               aria-expanded={searchOpen}
-              aria-label="Search"
+              aria-label={t.panel.search}
               className="lens-button"
               data-lens=""
               onClick={toggleSearch}
               ref={magnifierRef}
-              title="Search (or just start typing)"
+              title={t.panel.searchTitle}
               type="button"
             >
               <MagnifyingGlass size={16} weight="bold" />
@@ -546,28 +556,28 @@ export function QuickPanelView({
               title={recordingLabel}
               type="button"
             >
-              <span aria-hidden="true" className="rec-dot" />
+              <span aria-hidden="true" className="rec-dot" ref={recDotRef} />
               {/* Resuming sends two small rings out of the dot; the key replays them. */}
               {recordPulse && !isRecordingPaused ? <span aria-hidden="true" className="rec-ripple" key={recordPulse} /> : null}
             </button>
 
             <button
-              aria-label="Settings"
+              aria-label={t.panel.settings}
               className="lens-button"
               data-lens=""
               onClick={onOpenSettings}
-              title="Settings"
+              title={t.panel.settings}
               type="button"
             >
               <GearSix size={17} />
             </button>
 
             <button
-              aria-label="Hide window"
+              aria-label={t.panel.hide}
               className="lens-button"
               data-lens=""
               onClick={onHideWindow}
-              title="Hide (Esc)"
+              title={t.panel.hideTitle}
               type="button"
             >
               <X size={15} weight="bold" />
@@ -594,7 +604,7 @@ export function QuickPanelView({
             <LiquidGlass className="search-glass">
               <MagnifyingGlass className="search-icon" size={15} weight="bold" />
               <input
-                aria-label="Search clipboard history"
+                aria-label={t.panel.searchHistory}
                 className="search-box"
                 onBlur={() => {
                   setSearchFocused(false)
@@ -610,14 +620,14 @@ export function QuickPanelView({
                   window.clearTimeout(blurTimerRef.current)
                   setSearchFocused(true)
                 }}
-                placeholder="Search clips"
+                placeholder={t.panel.searchPlaceholder}
                 ref={inputRef}
                 tabIndex={searchOpen ? 0 : -1}
                 value={query}
               />
               {query ? (
                 <button
-                  aria-label="Clear search"
+                  aria-label={t.panel.clearSearch}
                   className="search-clear"
                   onClick={() => {
                     setQuery('')
@@ -652,13 +662,13 @@ export function QuickPanelView({
             transition={SPRING_SMOOTH}
           >
             <LayoutGroup id="cards">
-              {visiblePinned.length ? <p className="section-label">Pinned</p> : null}
+              {visiblePinned.length ? <p className="section-label">{t.panel.pinned}</p> : null}
               <AnimatePresence initial={false}>{visiblePinned.map(renderCard)}</AnimatePresence>
               {visibleRecent.length ? (
                 <div className="section-head">
-                  <p className="section-label">Recent</p>
-                  <button className="section-action" onClick={onClearHistory} title="Clear recent history" type="button">
-                    Clear
+                  <p className="section-label">{t.panel.recent}</p>
+                  <button className="section-action" onClick={onClearHistory} title={t.panel.clearTitle} type="button">
+                    {t.panel.clear}
                   </button>
                 </div>
               ) : null}
@@ -667,14 +677,14 @@ export function QuickPanelView({
           </motion.div>
         ) : hasRecords ? (
           <motion.p animate={{ opacity: 1, y: 0 }} className="no-match" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
-            没有匹配的记录
+            {t.panel.noMatch}
           </motion.p>
         ) : (
           <motion.div animate={{ opacity: 1, y: 0 }} className="empty-state" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
             <span className="empty-icon">
               <AppLogo size={48} />
             </span>
-            <span>No clips yet. Copy something to get started.</span>
+            <span>{t.panel.empty}</span>
           </motion.div>
         )}
       </motion.div>

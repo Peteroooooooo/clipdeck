@@ -236,7 +236,8 @@ class WindowsClipboardReader:
             return None
 
         try:
-            return ctypes.wstring_at(pointer)
+            # Some apps cut an emoji in half; a lone surrogate would make the clip unhashable.
+            return _without_lone_surrogates(ctypes.wstring_at(pointer))
         finally:
             self.kernel32.GlobalUnlock(handle)
 
@@ -252,20 +253,21 @@ class WindowsClipboardReader:
         try:
             size = int(self.kernel32.GlobalSize(handle))
             raw_value = ctypes.string_at(pointer, size)
-            raw_value = raw_value.split(b"\x00\x00", 1)[0].split(b"\x00", 1)[0]
-            for encoding in ("utf-8", "utf-16le", "latin1"):
-                try:
-                    decoded = raw_value.decode(encoding).strip()
-                except UnicodeDecodeError:
-                    continue
-                if decoded:
-                    return decoded
-            return None
+            # HTML Format is UTF-8 and RTF is 8-bit text, both ending at the first NUL.
+            raw_value = raw_value.split(b"\x00", 1)[0]
+            try:
+                decoded = raw_value.decode("utf-8")
+            except UnicodeDecodeError:
+                decoded = raw_value.decode("latin1")
+            return decoded.strip() or None
         finally:
             self.kernel32.GlobalUnlock(handle)
 
 
 RICH_TEXT_PLACEHOLDER = "Rich text"
+# Same limit as Windows' own clipboard history: one huge copy would otherwise be rewritten to
+# disk and sent to the page with every later clip.
+MAX_TEXT_CHARS = 4 * 1024 * 1024
 
 
 def build_record_from_capture(
@@ -319,7 +321,10 @@ def build_record_from_capture(
             image_height=height or None,
         )
 
-    if capture.rich_text and settings.record_rich_text:
+    if capture.text and len(capture.text) > MAX_TEXT_CHARS:
+        return None
+
+    if capture.rich_text and settings.record_rich_text and len(capture.rich_text) <= MAX_TEXT_CHARS:
         plain_text = (capture.text or _strip_markup(capture.rich_text)).strip()
         if not plain_text:
             plain_text = RICH_TEXT_PLACEHOLDER
@@ -402,6 +407,10 @@ def _glyph_for_app(source_app: str) -> str:
     return glyph or source_app[:2].upper()
 
 
+def _without_lone_surrogates(text: str) -> str:
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
 def _strip_markup(value: str) -> str:
     return re.sub(r"<[^>]+>", " ", value)
 
@@ -420,6 +429,7 @@ class WindowsClipboardService:
     GMEM_MOVEABLE = 0x0002
     KEYEVENTF_KEYUP = 0x0002
     SW_RESTORE = 9
+    VK_SHIFT = 0x10
     VK_CONTROL = 0x11
     VK_V = 0x56
 
@@ -463,39 +473,41 @@ class WindowsClipboardService:
         self.user32.SetForegroundWindow(hwnd)
         return True
 
-    def write_record(self, record: HistoryRecord, *, as_plain_text: bool) -> None:
+    def write_record(self, record: HistoryRecord, *, as_plain_text: bool) -> bool:
+        """False when the clipboard could not be opened (another app holds it)."""
         if not self._is_windows:
-            return
+            return False
 
         start_sequence = self._sequence_number()
         self._self_writes.begin(start_sequence=start_sequence)
         try:
-            self._write_clipboard(record, as_plain_text=as_plain_text)
+            return self._write_clipboard(record, as_plain_text=as_plain_text)
         finally:
             self._self_writes.finish(start_sequence=start_sequence, end_sequence=self._sequence_number())
 
     def _sequence_number(self) -> int:
         return int(self.user32.GetClipboardSequenceNumber())
 
-    def _write_clipboard(self, record: HistoryRecord, *, as_plain_text: bool) -> None:
+    def _write_clipboard(self, record: HistoryRecord, *, as_plain_text: bool) -> bool:
         if not self._open_clipboard():
-            return
+            return False
 
         try:
             self.user32.EmptyClipboard()
 
             if record.type == "file" and record.file_paths and not as_plain_text:
                 self._set_file_drop(record.file_paths)
-                return
+                return True
 
             if record.type == "image" and record.image_path and not as_plain_text and self._set_image(record.image_path):
-                return
+                return True
 
             plain_text = record.plain_text or record.detail or record.summary
             self._set_unicode_text(plain_text)
 
             if record.rich_text and not as_plain_text:
                 self._set_rich_payload(record.rich_text)
+            return True
         finally:
             self.user32.CloseClipboard()
 
@@ -503,6 +515,10 @@ class WindowsClipboardService:
         if not self._is_windows:
             return
 
+        # Plain-text paste is Ctrl+Shift+V, pressed in the panel and possibly still held: with
+        # Shift down the target app would get Ctrl+Shift+V (paste special, Markdown preview...).
+        if self.user32.GetAsyncKeyState(self.VK_SHIFT) & 0x8000:
+            self.user32.keybd_event(self.VK_SHIFT, 0, self.KEYEVENTF_KEYUP, 0)
         self.user32.keybd_event(self.VK_CONTROL, 0, 0, 0)
         self.user32.keybd_event(self.VK_V, 0, 0, 0)
         self.user32.keybd_event(self.VK_V, 0, self.KEYEVENTF_KEYUP, 0)
@@ -649,3 +665,5 @@ def _configure_window_activation_api(user32) -> None:
     user32.ShowWindow.restype = wintypes.BOOL
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short

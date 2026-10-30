@@ -11,23 +11,9 @@ else:  # pragma: no cover - non-Windows guard
 
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0
-WAIT_TIMEOUT = 258
+INFINITE = 0xFFFFFFFF
 EVENT_MODIFY_STATE = 0x0002
 ASFW_ANY = 0xFFFFFFFF
-
-
-class NoopSingleInstanceManager:
-    def acquire_primary(self) -> bool:
-        return True
-
-    def signal_primary(self) -> bool:
-        return False
-
-    def start_activation_listener(self, on_activate) -> None:
-        return None
-
-    def stop(self) -> None:
-        return None
 
 
 class WindowsSingleInstanceManager:
@@ -38,12 +24,10 @@ class WindowsSingleInstanceManager:
         event_name: str = "Local\\ClipDeck.Activate",
         kernel32=None,
         is_windows: bool | None = None,
-        wait_timeout_ms: int = 100,
     ) -> None:
         self._is_windows = hasattr(ctypes, "windll") and wintypes is not None if is_windows is None else is_windows
         self.mutex_name = mutex_name
         self.event_name = event_name
-        self.wait_timeout_ms = wait_timeout_ms
         self._mutex_handle = None
         self._event_handle = None
         self._listener_thread: threading.Thread | None = None
@@ -132,10 +116,9 @@ class WindowsSingleInstanceManager:
         self._close_handles()
 
     def _listen_for_activation(self, on_activate) -> None:
+        # Sleeps until a second launch signals the event; stop() signals it too, to end the wait.
         while not self._stop_event.is_set():
-            wait_result = self.kernel32.WaitForSingleObject(self._event_handle, self.wait_timeout_ms)
-            if wait_result == WAIT_TIMEOUT:
-                continue
+            wait_result = self.kernel32.WaitForSingleObject(self._event_handle, INFINITE)
             if wait_result != WAIT_OBJECT_0:
                 break
 

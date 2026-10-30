@@ -23,6 +23,7 @@ from .models import ShortcutBindings
 from .models import ToastMessage
 from .models import default_settings
 from .models import image_save_path_from_payload
+from .models import language_from_payload
 from .runtime import resolve_default_storage_path
 from .storage import AppStorage
 from .storage import resolve_local_path
@@ -56,17 +57,15 @@ class AppState:
             self.settings.storage_path = str(self.storage.base_path)
         self.records = self._merge_duplicates(self.storage.load_records())
         self.toast: ToastMessage | None = None
-        self.deleted_record: HistoryRecord | None = None
-        self.deleted_record_image_bytes: bytes | None = None
+        # What the toast's undo brings back: the clip just deleted, or the recent clips just
+        # cleared, with the bytes of their images (whose files are pruned meanwhile).
+        self.deleted_records: list[HistoryRecord] = []
+        self.deleted_image_bytes: dict[str, bytes] = {}
         self._listeners: list[SnapshotListener] = []
         self._lock = threading.RLock()
         if unavailable_path is not None:
             self.settings.storage_path = str(self.storage.base_path)
-            self.toast = self._make_toast(
-                title="存储位置不可用",
-                message=f"{unavailable_path} 无法访问，已改用默认位置。",
-                tone="danger",
-            )
+            self.toast = self._make_toast("storage_unavailable", "danger", path=unavailable_path)
         self._normalize_storage_path()
         self._persist_all()
 
@@ -82,8 +81,8 @@ class AppState:
             return {
                 "view": self.view,
                 "isRecordingPaused": self.is_recording_paused,
-                "pinnedRecords": [record.to_dict() for record in pinned],
-                "recentRecords": [record.to_dict() for record in recent],
+                "pinnedRecords": [record.to_page_dict() for record in pinned],
+                "recentRecords": [record.to_page_dict() for record in recent],
                 "settings": self.settings.to_dict(),
                 "toast": None if self.toast is None else self.toast.to_dict(),
             }
@@ -103,12 +102,10 @@ class AppState:
     def toggle_pause(self) -> dict[str, object]:
         with self._lock:
             self.is_recording_paused = not self.is_recording_paused
-            self.toast = self._make_toast(
-                title="记录已暂停" if self.is_recording_paused else "已恢复记录",
-                message="新的剪贴板内容暂时不会进入历史。"
+            self.toast = (
+                self._make_toast("recording_paused", "danger")
                 if self.is_recording_paused
-                else "新的剪贴板内容会继续进入历史。",
-                tone="danger" if self.is_recording_paused else "success",
+                else self._make_toast("recording_resumed", "success")
             )
             snapshot = self.snapshot()
         return self._notify(snapshot)
@@ -147,7 +144,7 @@ class AppState:
                 self.records.append(record)
                 self._apply_retention()
 
-            self._persist_all()
+            self._persist_records()
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -161,12 +158,8 @@ class AppState:
             record.updated_at = self._timestamp()
             self._move_to_end(record)
             self._apply_retention()
-            self._persist_all()
-            self.toast = self._make_toast(
-                title="已固定记录" if record.pinned else "已取消固定",
-                message=record.summary,
-                tone="success",
-            )
+            self._persist_records()
+            self.toast = self._make_toast("pinned" if record.pinned else "unpinned", "success", summary=record.summary)
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -176,17 +169,10 @@ class AppState:
             if record is None:
                 return self.snapshot()
 
-            self.deleted_record_image_bytes = self.storage.read_image_bytes(record.image_path)
-            self.deleted_record = deepcopy(record)
+            self._keep_for_undo([record])
             self.records = [item for item in self.records if item.id != record_id]
-            self._persist_all()
-            self.toast = self._make_toast(
-                title="记录已删除",
-                message=record.summary,
-                tone="danger",
-                action_kind="undo_delete",
-                action_label="撤销",
-            )
+            self._persist_records()
+            self.toast = self._make_toast("deleted", "danger", action_kind="undo_delete", summary=record.summary)
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -208,50 +194,55 @@ class AppState:
 
     def undo_delete(self) -> dict[str, object]:
         with self._lock:
-            if self.deleted_record is None:
+            if not self.deleted_records:
                 return self.snapshot()
 
-            restored_record = deepcopy(self.deleted_record)
-            if restored_record.type == "image" and self.deleted_record_image_bytes is not None:
-                restored_record.image_path = self.storage.save_image_bytes(
-                    record_id=restored_record.id,
-                    image_bytes=self.deleted_record_image_bytes,
-                )
+            restored = [deepcopy(record) for record in self.deleted_records]
+            for record in restored:
+                image_bytes = self.deleted_image_bytes.get(record.id)
+                if record.type == "image" and image_bytes is not None:
+                    record.image_path = self.storage.save_image_bytes(record_id=record.id, image_bytes=image_bytes)
 
-            self.records.append(restored_record)
+            self.records.extend(restored)
             self._apply_retention()
-            self._persist_all()
-            self.toast = self._make_toast(
-                title="已恢复删除的记录",
-                message=restored_record.summary,
-                tone="success",
+            self._persist_records()
+            self.toast = (
+                self._make_toast("restored", "success", summary=restored[0].summary)
+                if len(restored) == 1
+                else self._make_toast("restored_many", "success", count=len(restored))
             )
-            self.deleted_record = None
-            self.deleted_record_image_bytes = None
+            self._keep_for_undo([])
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
     def clear_all_history(self) -> dict[str, object]:
         with self._lock:
             self.records = []
-            self._persist_all()
-            self.toast = self._make_toast(
-                title="已清空全部历史",
-                message="固定和最近记录都已移除。",
-                tone="danger",
-            )
+            self._keep_for_undo([])
+            self._persist_records()
+            self.toast = self._make_toast("cleared_all", "danger")
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
     def clear_unpinned_history(self) -> dict[str, object]:
         with self._lock:
+            removed = [record for record in self.records if not record.pinned]
+            self._keep_for_undo(removed)
             self.records = [record for record in self.records if record.pinned]
-            self._persist_all()
+            self._persist_records()
             self.toast = self._make_toast(
-                title="已清除未固定记录",
-                message="仅保留固定记录。",
-                tone="danger",
+                "cleared_unpinned",
+                "danger",
+                action_kind="undo_delete" if removed else None,
+                count=len(removed),
             )
+            snapshot = self.snapshot()
+        return self._notify(snapshot)
+
+    def report_hotkey_failed(self, shortcut: str) -> dict[str, object]:
+        """Windows refused the panel shortcut (another app holds it): say so on the panel."""
+        with self._lock:
+            self.toast = self._make_toast("hotkey_failed", "danger", shortcut=shortcut)
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -274,20 +265,16 @@ class AppState:
             source = resolve_local_path(record.image_path)
             folder = Path(self.settings.image_save_path)
             if source is None or not source.is_file():
-                self.toast = self._make_toast(title="图片保存失败", message="这张图片的文件已不存在。", tone="danger")
+                self.toast = self._make_toast("image_missing", "danger")
             else:
                 try:
                     folder.mkdir(parents=True, exist_ok=True)
                     target = _unused_path(folder, _image_file_stem(record.created_at), source.suffix or ".png")
                     shutil.copyfile(source, target)
                 except OSError:
-                    self.toast = self._make_toast(
-                        title="图片保存失败",
-                        message=f"无法写入 {folder}，可在设置里换一个保存位置。",
-                        tone="danger",
-                    )
+                    self.toast = self._make_toast("image_save_failed", "danger", folder=str(folder))
                 else:
-                    self.toast = self._make_toast(title="图片已保存", message=str(target), tone="success")
+                    self.toast = self._make_toast("image_saved", "success", path=str(target))
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -314,6 +301,7 @@ class AppState:
                     settings["appearance"] if isinstance(settings.get("appearance"), dict) else None
                 ),
                 image_save_path=image_save_path_from_payload(settings.get("imageSavePath")),
+                language=language_from_payload(settings.get("language")),
             )
             self.is_recording_paused = pause_recording
             self.view = "panel"
@@ -327,17 +315,9 @@ class AppState:
             self._apply_retention()
             self._persist_all()
             self.toast = (
-                self._make_toast(
-                    title="存储位置不可用",
-                    message=f"{requested_path} 无法写入，其余设置已保存。",
-                    tone="danger",
-                )
+                self._make_toast("storage_unwritable", "danger", path=requested_path)
                 if storage_failed
-                else self._make_toast(
-                    title="设置已保存",
-                    message="新的应用配置已经生效。",
-                    tone="success",
-                )
+                else self._make_toast("settings_saved", "success")
             )
             snapshot = self.snapshot()
         return self._notify(snapshot)
@@ -348,8 +328,7 @@ class AppState:
     def dismiss_toast(self) -> dict[str, object]:
         with self._lock:
             self.toast = None
-            self.deleted_record = None
-            self.deleted_record_image_bytes = None
+            self._keep_for_undo([])
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -360,7 +339,12 @@ class AppState:
                 return self.snapshot()
             record = deepcopy(record)
 
-        self.clipboard_service.write_record(record, as_plain_text=as_plain_text)
+        if self.clipboard_service.write_record(record, as_plain_text=as_plain_text) is False:
+            # Another app held the clipboard: Ctrl+V now would paste whatever was there before.
+            with self._lock:
+                self.toast = self._make_toast("clipboard_busy", "danger")
+                snapshot = self.snapshot()
+            return self._notify(snapshot)
         if paste and self.has_paste_target():
             restore_target = getattr(self.clipboard_service, "restore_paste_target", None)
             if callable(restore_target):
@@ -375,11 +359,24 @@ class AppState:
             listener(snapshot)
         return snapshot
 
+    def _keep_for_undo(self, records: list[HistoryRecord]) -> None:
+        self.deleted_records = [deepcopy(record) for record in records]
+        self.deleted_image_bytes = {}
+        for record in records:
+            if record.type == "image":
+                image_bytes = self.storage.read_image_bytes(record.image_path)
+                if image_bytes is not None:
+                    self.deleted_image_bytes[record.id] = image_bytes
+
+    def _persist_records(self) -> None:
+        """Clips changed, settings did not: only the history file is written."""
+        self.storage.save_records(self.records)
+        self.storage.prune_unreferenced_images(record.image_path for record in self.records)
+
     def _persist_all(self) -> None:
         self.settings.storage_path = str(self.storage.base_path)
         self.storage.save_settings(self.settings)
-        self.storage.save_records(self.records)
-        self.storage.prune_unreferenced_images(record.image_path for record in self.records)
+        self._persist_records()
         if self.bootstrap_storage.base_path != self.storage.base_path:
             bootstrap_settings = deepcopy(self.settings)
             bootstrap_settings.storage_path = str(self.storage.base_path)
@@ -482,22 +479,14 @@ class AppState:
             migrated_records.append(migrated_record)
         return migrated_records
 
-    def _make_toast(
-        self,
-        *,
-        title: str,
-        message: str,
-        tone: str,
-        action_kind: str | None = None,
-        action_label: str | None = None,
-    ) -> ToastMessage:
+    @staticmethod
+    def _make_toast(kind: str, tone: str, *, action_kind: str | None = None, **params: object) -> ToastMessage:
         return ToastMessage(
-            id=f"{title}-{int(datetime.now().timestamp() * 1000)}",
-            title=title,
-            message=message,
+            id=f"{kind}-{int(datetime.now().timestamp() * 1000)}",
+            kind=kind,
             tone=tone,
+            params=params,
             action_kind=action_kind,
-            action_label=action_label,
         )
 
     @staticmethod

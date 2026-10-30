@@ -1,9 +1,27 @@
 import { useState } from 'react'
-import { ArrowCounterClockwise, CaretDown, CaretLeft, CaretUp, FloppyDisk, X } from '@phosphor-icons/react'
+import { motion } from 'motion/react'
+import {
+  AppWindow,
+  ArrowCounterClockwise,
+  CaretDown,
+  CaretLeft,
+  CaretRight,
+  CaretUp,
+  ClipboardText,
+  ClockCounterClockwise,
+  Drop,
+  FloppyDisk,
+  Keyboard,
+  SlidersHorizontal,
+  X,
+  type Icon,
+} from '@phosphor-icons/react'
 import { DEFAULT_APPEARANCE } from '../../app/appearance'
-import type { AppearanceSettings, SettingsState, ShortcutBindings } from '../../app/types'
-import { AppearanceSections, type GlassInfo } from './AppearanceSections'
-import { ToggleRow } from './controls'
+import { useT } from '../../app/i18n'
+import type { AppearanceSettings, Language, SettingsState, ShortcutBindings } from '../../app/types'
+import { SPRING_SMOOTH } from '../../shared/ui/motionTokens'
+import { GlassSections, LiquidSections, type GlassInfo } from './AppearanceSections'
+import { ChoiceRow, ToggleRow } from './controls'
 
 export type { GlassInfo }
 
@@ -20,9 +38,27 @@ interface SettingsViewProps {
   onPreviewAppearance?: (appearance: AppearanceSettings) => void
 }
 
+type Category = 'general' | 'capture' | 'shortcuts' | 'history' | 'glass' | 'liquid'
+
+const CATEGORIES: { key: Category; icon: Icon }[] = [
+  { key: 'general', icon: SlidersHorizontal },
+  { key: 'capture', icon: ClipboardText },
+  { key: 'shortcuts', icon: Keyboard },
+  { key: 'history', icon: ClockCounterClockwise },
+  { key: 'glass', icon: AppWindow },
+  { key: 'liquid', icon: Drop },
+]
+
+// Each language is named in itself, so it can be found whatever the app is showing.
+const LANGUAGES: { value: Language; label: string }[] = [
+  { value: 'zh', label: '中文' },
+  { value: 'en', label: 'English' },
+]
+
+const SHORTCUT_KEYS: (keyof ShortcutBindings)[] = ['togglePanel', 'primaryAction', 'pastePlainText', 'togglePin', 'deleteRecord']
+
 const HISTORY_LIMIT_MIN = 1
 const HISTORY_LIMIT_MAX = 5000
-
 
 function ShortcutRow({
   label,
@@ -40,6 +76,40 @@ function ShortcutRow({
       </span>
       <input className="field-input" onChange={(event) => onChange(event.target.value)} value={value} />
     </label>
+  )
+}
+
+function FolderRow({
+  label,
+  description,
+  value,
+  browseLabel,
+  testId,
+  onBrowse,
+}: {
+  label: string
+  description: string
+  value: string
+  browseLabel?: string
+  testId: string
+  onBrowse: () => void
+}) {
+  const t = useT()
+  return (
+    <div className="field-row field-row-storage">
+      <div className="field-label">
+        <strong>{label}</strong>
+        <span>{description}</span>
+      </div>
+      <div className="storage-path-stack" data-testid={`${testId}-stack`}>
+        <div className="storage-path-value" data-testid={`${testId}-value`} title={value}>
+          {value}
+        </div>
+        <button aria-label={browseLabel} className="ghost-button storage-path-browse" onClick={onBrowse} type="button">
+          {t.settings.browse}
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -63,7 +133,17 @@ export function SettingsView({
   onPickStoragePath,
   onPreviewAppearance,
 }: SettingsViewProps) {
+  const t = useT()
   const [draft, setDraft] = useState(settings)
+  // The list of categories (null), or one category's page.
+  const [page, setPage] = useState<Category | null>(null)
+  // Pages come in from the right, the list comes back from the left.
+  const [forward, setForward] = useState(true)
+
+  const openPage = (next: Category | null) => {
+    setForward(next !== null)
+    setPage(next)
+  }
 
   const setAppearance = (appearance: AppearanceSettings) => {
     setDraft((currentDraft) => ({ ...currentDraft, appearance }))
@@ -92,273 +172,238 @@ export function SettingsView({
     setHistoryLimitInput(String(settings.historyLimit))
   }
 
-  return (
-    <section className="settings-shell">
-      <header className="settings-header">
-        <button aria-label="Back" className="icon-button" onClick={onCancel} title="Back" type="button">
-          <CaretLeft size={17} weight="bold" />
-        </button>
-        <div className="window-drag-region settings-title">
-          <h1>Settings</h1>
-          <p>Configure ClipDeck behavior, shortcuts, and storage.</p>
-        </div>
-      </header>
+  const pickFolder = (current: string, apply: (path: string) => void) =>
+    void onPickStoragePath(current).then((selectedPath) => {
+      if (selectedPath) apply(selectedPath)
+    })
 
-      <div className="settings-scroll">
-        <section aria-labelledby="general-heading" className="settings-section">
-          <h2 id="general-heading">General</h2>
+  const toggle = (key: 'launchOnStartup' | 'recordText' | 'recordRichText' | 'recordImages' | 'recordFiles') =>
+    setDraft((currentDraft) => ({ ...currentDraft, [key]: !currentDraft[key] }))
+
+  const resetAppearance = () => setAppearance(DEFAULT_APPEARANCE)
+  const changeAppearance = (patch: Partial<AppearanceSettings>) => setAppearance({ ...draft.appearance, ...patch })
+
+  const renderPage = (category: Category) => {
+    switch (category) {
+      case 'general':
+        return (
           <div className="settings-grid">
             <ToggleRow
               checked={draft.launchOnStartup}
-              description="Auto-run after Windows login"
-              label="Launch on Startup"
-              onClick={() => setDraft({ ...draft, launchOnStartup: !draft.launchOnStartup })}
+              description={t.settings.launchOnStartup[1]}
+              label={t.settings.launchOnStartup[0]}
+              onClick={() => toggle('launchOnStartup')}
+            />
+            <ChoiceRow<Language>
+              description={t.settings.language[1]}
+              label={t.settings.language[0]}
+              onChange={(language) => setDraft((currentDraft) => ({ ...currentDraft, language }))}
+              options={LANGUAGES}
+              value={draft.language}
             />
           </div>
-        </section>
-
-        <AppearanceSections
-          appearance={draft.appearance}
-          glassInfo={glassInfo}
-          onChange={(patch) => setAppearance({ ...draft.appearance, ...patch })}
-          onReset={() => setAppearance(DEFAULT_APPEARANCE)}
-        />
-
-        <section aria-labelledby="capture-heading" className="settings-section">
-          <h2 id="capture-heading">Capture</h2>
+        )
+      case 'capture':
+        return (
           <div className="settings-grid">
-            <ToggleRow
-              checked={draft.recordText}
-              description="Store plain text copied from apps"
-              label="Record Text"
-              onClick={() => setDraft({ ...draft, recordText: !draft.recordText })}
-            />
-            <ToggleRow
-              checked={draft.recordRichText}
-              description="Keep formatting when rich content is available"
-              label="Record Rich Text"
-              onClick={() => setDraft({ ...draft, recordRichText: !draft.recordRichText })}
-            />
-            <ToggleRow
-              checked={draft.recordImages}
-              description="Store copied screenshots and image clips"
-              label="Record Images"
-              onClick={() => setDraft({ ...draft, recordImages: !draft.recordImages })}
-            />
-            <ToggleRow
-              checked={draft.recordFiles}
-              description="Keep copied files and file groups in history"
-              label="Record Files"
-              onClick={() => setDraft({ ...draft, recordFiles: !draft.recordFiles })}
-            />
+            {(['recordText', 'recordRichText', 'recordImages', 'recordFiles'] as const).map((key) => (
+              <ToggleRow
+                checked={draft[key]}
+                description={t.settings[key][1]}
+                key={key}
+                label={t.settings[key][0]}
+                onClick={() => toggle(key)}
+              />
+            ))}
           </div>
-        </section>
-
-        <section aria-labelledby="shortcut-heading" className="settings-section">
-          <h2 id="shortcut-heading">Shortcuts</h2>
-          <div className="shortcut-grid">
-            <ShortcutRow
-              label="Toggle Panel"
-              onChange={(value) =>
-                setDraft({
-                  ...draft,
-                  shortcuts: { ...draft.shortcuts, togglePanel: value },
-                })
-              }
-              value={draft.shortcuts.togglePanel}
-            />
-            <ShortcutRow
-              label="Primary Action"
-              onChange={(value) =>
-                setDraft({
-                  ...draft,
-                  shortcuts: { ...draft.shortcuts, primaryAction: value },
-                })
-              }
-              value={draft.shortcuts.primaryAction}
-            />
-            <ShortcutRow
-              label="Plain Text Paste"
-              onChange={(value) =>
-                setDraft({
-                  ...draft,
-                  shortcuts: { ...draft.shortcuts, pastePlainText: value },
-                })
-              }
-              value={draft.shortcuts.pastePlainText}
-            />
-            <ShortcutRow
-              label="Toggle Pin"
-              onChange={(value) =>
-                setDraft({
-                  ...draft,
-                  shortcuts: { ...draft.shortcuts, togglePin: value },
-                })
-              }
-              value={draft.shortcuts.togglePin}
-            />
-            <ShortcutRow
-              label="Delete Record"
-              onChange={(value) =>
-                setDraft({
-                  ...draft,
-                  shortcuts: { ...draft.shortcuts, deleteRecord: value },
-                })
-              }
-              value={draft.shortcuts.deleteRecord}
-            />
-          </div>
-          <button
-            className="ghost-button"
-            onClick={() =>
-              void onRestoreDefaults().then((shortcuts) => setDraft((currentDraft) => ({ ...currentDraft, shortcuts })))
-            }
-            type="button"
-          >
-            <ArrowCounterClockwise size={14} weight="bold" />
-            Restore Defaults
-          </button>
-        </section>
-
-        <section aria-labelledby="history-heading" className="settings-section">
-          <h2 id="history-heading">History &amp; Storage</h2>
-          <div className="settings-grid">
-            <label className="field-row">
-              <span className="field-label">
-                <strong>History Limit</strong>
-                <span>Max unpinned records to keep. Pinned items always stay.</span>
-              </span>
-              <div className="stepper-control">
-                <input
-                  aria-label="History Limit"
-                  className="stepper-input"
-                  inputMode="numeric"
-                  max={HISTORY_LIMIT_MAX}
-                  min={HISTORY_LIMIT_MIN}
-                  onBlur={() => {
-                    if (historyLimitInput.trim() === '') {
-                      setHistoryLimitInput(String(draft.historyLimit))
-                    }
-                  }}
-                  onChange={(event) => {
-                    const nextValue = event.target.value
-                    setHistoryLimitInput(nextValue)
-
-                    if (nextValue.trim() === '') {
-                      return
-                    }
-
-                    updateHistoryLimit(Number(nextValue))
-                  }}
-                  type="number"
-                  value={historyLimitInput}
+        )
+      case 'shortcuts':
+        return (
+          <>
+            <div className="shortcut-grid">
+              {SHORTCUT_KEYS.map((key) => (
+                <ShortcutRow
+                  key={key}
+                  label={t.settings.shortcuts[key]}
+                  onChange={(value) =>
+                    setDraft((currentDraft) => ({ ...currentDraft, shortcuts: { ...currentDraft.shortcuts, [key]: value } }))
+                  }
+                  value={draft.shortcuts[key]}
                 />
-                <div className="stepper-buttons">
-                  <button
-                    aria-label="Increase history limit"
-                    className="stepper-button"
-                    onClick={() => updateHistoryLimit(draft.historyLimit + 1)}
-                    type="button"
-                  >
-                    <CaretUp size={12} weight="bold" />
-                  </button>
-                  <button
-                    aria-label="Decrease history limit"
-                    className="stepper-button"
-                    onClick={() => updateHistoryLimit(draft.historyLimit - 1)}
-                    type="button"
-                  >
-                    <CaretDown size={12} weight="bold" />
-                  </button>
-                </div>
-              </div>
-            </label>
-            <div className="field-row field-row-storage">
-              <div className="field-label">
-                <strong>Storage Path</strong>
-                <span>Choose where local history and images are stored</span>
-              </div>
-              <div className="storage-path-stack" data-testid="storage-path-stack">
-                <div className="storage-path-value" data-testid="storage-path-value" title={draft.storagePath}>
-                  {draft.storagePath}
-                </div>
-                <button
-                  className="ghost-button storage-path-browse"
-                  onClick={() =>
-                    void onPickStoragePath(draft.storagePath).then((selectedPath) => {
-                      if (!selectedPath) {
+              ))}
+            </div>
+            <button
+              className="ghost-button section-reset"
+              onClick={() =>
+                void onRestoreDefaults().then((shortcuts) => setDraft((currentDraft) => ({ ...currentDraft, shortcuts })))
+              }
+              type="button"
+            >
+              <ArrowCounterClockwise size={14} weight="bold" />
+              {t.settings.shortcuts.restore}
+            </button>
+          </>
+        )
+      case 'history':
+        return (
+          <>
+            <div className="settings-grid">
+              <label className="field-row">
+                <span className="field-label">
+                  <strong>{t.settings.historyLimit[0]}</strong>
+                  <span>{t.settings.historyLimit[1]}</span>
+                </span>
+                <div className="stepper-control">
+                  <input
+                    aria-label={t.settings.historyLimit[0]}
+                    className="stepper-input"
+                    inputMode="numeric"
+                    max={HISTORY_LIMIT_MAX}
+                    min={HISTORY_LIMIT_MIN}
+                    onBlur={() => {
+                      if (historyLimitInput.trim() === '') {
+                        setHistoryLimitInput(String(draft.historyLimit))
+                      }
+                    }}
+                    onChange={(event) => {
+                      const nextValue = event.target.value
+                      setHistoryLimitInput(nextValue)
+
+                      if (nextValue.trim() === '') {
                         return
                       }
 
-                      setDraft((currentDraft) => ({
-                        ...currentDraft,
-                        storagePath: selectedPath,
-                      }))
-                    })
-                  }
-                  type="button"
-                >
-                  Browse
-                </button>
-              </div>
-            </div>
-            <div className="field-row field-row-storage">
-              <div className="field-label">
-                <strong>Image Save Folder</strong>
-                <span>Where the save button on image clips puts the picture</span>
-              </div>
-              <div className="storage-path-stack" data-testid="image-save-path-stack">
-                <div className="storage-path-value" data-testid="image-save-path-value" title={draft.imageSavePath}>
-                  {draft.imageSavePath}
+                      updateHistoryLimit(Number(nextValue))
+                    }}
+                    type="number"
+                    value={historyLimitInput}
+                  />
+                  <div className="stepper-buttons">
+                    <button
+                      aria-label={t.settings.increaseLimit}
+                      className="stepper-button"
+                      onClick={() => updateHistoryLimit(draft.historyLimit + 1)}
+                      type="button"
+                    >
+                      <CaretUp size={12} weight="bold" />
+                    </button>
+                    <button
+                      aria-label={t.settings.decreaseLimit}
+                      className="stepper-button"
+                      onClick={() => updateHistoryLimit(draft.historyLimit - 1)}
+                      type="button"
+                    >
+                      <CaretDown size={12} weight="bold" />
+                    </button>
+                  </div>
                 </div>
-                <button
-                  aria-label="Browse image save folder"
-                  className="ghost-button storage-path-browse"
-                  onClick={() =>
-                    void onPickStoragePath(draft.imageSavePath).then((selectedPath) => {
-                      if (!selectedPath) {
-                        return
-                      }
-
-                      setDraft((currentDraft) => ({
-                        ...currentDraft,
-                        imageSavePath: selectedPath,
-                      }))
-                    })
-                  }
-                  type="button"
-                >
-                  Browse
-                </button>
-              </div>
+              </label>
+              <FolderRow
+                description={t.settings.storagePath[1]}
+                label={t.settings.storagePath[0]}
+                onBrowse={() =>
+                  pickFolder(draft.storagePath, (storagePath) => setDraft((currentDraft) => ({ ...currentDraft, storagePath })))
+                }
+                testId="storage-path"
+                value={draft.storagePath}
+              />
+              <FolderRow
+                browseLabel={t.settings.browseImageFolder}
+                description={t.settings.imageSavePath[1]}
+                label={t.settings.imageSavePath[0]}
+                onBrowse={() =>
+                  pickFolder(draft.imageSavePath, (imageSavePath) =>
+                    setDraft((currentDraft) => ({ ...currentDraft, imageSavePath })),
+                  )
+                }
+                testId="image-save-path"
+                value={draft.imageSavePath}
+              />
             </div>
-          </div>
-        </section>
-
-        <section aria-labelledby="data-heading" className="settings-section settings-section-danger">
-          <h2 id="data-heading">Data Management</h2>
-          <div className="settings-grid">
-            <div className="field-row field-row-actions">
-              <div className="field-label">
-                <strong>Clear All History</strong>
-                <span>Remove pinned and recent clips from local history</span>
+            <section aria-labelledby="data-heading" className="settings-section settings-section-danger">
+              <h2 id="data-heading">{t.settings.dataHeading}</h2>
+              <div className="settings-grid">
+                <div className="field-row field-row-actions">
+                  <div className="field-label">
+                    <strong>{t.settings.clearAll[0]}</strong>
+                    <span>{t.settings.clearAll[1]}</span>
+                  </div>
+                  <button className="danger-button" onClick={onClearAllHistory} type="button">
+                    {t.settings.clearAllButton}
+                  </button>
+                </div>
               </div>
-              <button className="danger-button" onClick={onClearAllHistory} type="button">
-                Clear All History
+            </section>
+          </>
+        )
+      case 'glass':
+        return (
+          <GlassSections appearance={draft.appearance} glassInfo={glassInfo} onChange={changeAppearance} onReset={resetAppearance} />
+        )
+      case 'liquid':
+        return (
+          <LiquidSections appearance={draft.appearance} glassInfo={glassInfo} onChange={changeAppearance} onReset={resetAppearance} />
+        )
+    }
+  }
+
+  const title = page ? t.settings.categories[page][0] : t.settings.title
+  const subtitle = page ? t.settings.categories[page][1] : t.settings.subtitle
+
+  return (
+    <section className="settings-shell">
+      <header className="settings-header">
+        <button
+          aria-label={t.settings.back}
+          className="icon-button"
+          onClick={() => (page ? openPage(null) : onCancel())}
+          title={t.settings.back}
+          type="button"
+        >
+          <CaretLeft size={17} weight="bold" />
+        </button>
+        <div className="window-drag-region settings-title">
+          <h1>{title}</h1>
+          <p>{subtitle}</p>
+        </div>
+      </header>
+
+      {/* Keyed by page: each page starts at the top and slides in from the side it comes from. */}
+      <motion.div
+        animate={{ opacity: 1, x: 0 }}
+        className="settings-scroll"
+        initial={{ opacity: 0, x: forward ? 18 : -18 }}
+        key={page ?? 'home'}
+        transition={SPRING_SMOOTH}
+      >
+        {page ? (
+          renderPage(page)
+        ) : (
+          <nav aria-label={t.settings.title} className="settings-grid settings-nav">
+            {CATEGORIES.map(({ key, icon: CategoryIcon }) => (
+              <button className="field-row settings-nav-row" key={key} onClick={() => openPage(key)} type="button">
+                <span aria-hidden="true" className="settings-nav-icon">
+                  <CategoryIcon size={16} weight="bold" />
+                </span>
+                <span className="field-label">
+                  <strong>{t.settings.categories[key][0]}</strong>
+                  <span>{t.settings.categories[key][1]}</span>
+                </span>
+                <CaretRight aria-hidden="true" className="settings-nav-caret" size={14} weight="bold" />
               </button>
-            </div>
-          </div>
-        </section>
-      </div>
+            ))}
+          </nav>
+        )}
+      </motion.div>
 
       <footer className="settings-footer">
         <button className="ghost-button" onClick={onCancel} type="button">
           <X size={14} weight="bold" />
-          Cancel
+          {t.settings.cancel}
         </button>
         <button className="primary-button" onClick={() => onSave(draft)} type="button">
           <FloppyDisk size={15} />
-          Save
+          {t.settings.save}
         </button>
       </footer>
     </section>

@@ -6,7 +6,9 @@ import {
   MIN_POINT_GAP,
   matchingPreset,
   resolveTextTone,
+  type Preset,
 } from '../../app/appearance'
+import { useT, type Strings } from '../../app/i18n'
 import type { AppearanceSettings, GlassSource, LiquidMode, TextTone } from '../../app/types'
 import { ChoiceRow, PresetRow, SliderRow, ToggleRow } from './controls'
 import { LiquidPreview } from './LiquidPreview'
@@ -30,29 +32,49 @@ const percent = (value: number) => `${Math.round(value)}%`
 const pixels = (value: number) => `${Math.round(value)} px`
 const decimal = (digits: number) => (value: number) => value.toFixed(digits)
 
-export function AppearanceSections({ appearance, glassInfo, onChange, onReset }: AppearanceSectionsProps) {
+/** Template names and descriptions in the app's language. */
+function localized<T>(presets: Preset<T>[], t: Strings) {
+  return presets.map((preset) => {
+    const [label, description] = t.appearance.presets[preset.id] ?? [preset.label, preset.description]
+    return { ...preset, label, description }
+  })
+}
+
+function ResetButton({ onReset }: { onReset: () => void }) {
+  const t = useT()
+  return (
+    <button className="ghost-button section-reset" onClick={onReset} type="button">
+      <ArrowCounterClockwise size={14} weight="bold" />
+      {t.appearance.reset}
+    </button>
+  )
+}
+
+/** The window itself: corners, motion, the glass and the text on it. */
+export function GlassSections({ appearance, glassInfo, onChange, onReset }: AppearanceSectionsProps) {
+  const t = useT()
+  const a = t.appearance
   const live = appearance.glassSource === 'live'
   // Live glass without the filter pipeline is Windows' own blur, whose strength is fixed.
   const liveFixed = live && glassInfo.liveAvailable && !glassInfo.filtered
-  const liquid = appearance.liquidEnabled
   const sourceHint = glassInfo.liveAvailable
     ? live
       ? glassInfo.filtered
-        ? 'The desktop behind the panel, blurred and filtered in real time'
-        : "Windows' own live blur (fixed strength); this system cannot capture behind the panel"
-      : 'A frosted snapshot taken when the panel opens; liquid edges bend it'
-    : 'Live blur needs the native helper (desktop app only); using snapshots'
-  const autoTone = resolveTextTone({ ...appearance, textTone: 'auto' }) === 'light' ? 'white' : 'black'
+        ? a.sourceHintFiltered
+        : a.sourceHintFixed
+      : a.sourceHintSnapshot
+    : a.sourceHintUnavailable
+  const autoTone = resolveTextTone({ ...appearance, textTone: 'auto' })
 
   return (
     <>
       <section aria-labelledby="appearance-heading" className="settings-section">
-        <h2 id="appearance-heading">Appearance</h2>
+        <h2 id="appearance-heading">{a.windowHeading}</h2>
         <div className="settings-grid">
           <SliderRow
-            description="Roundness of the panel corners"
+            description={a.cornerRadius[1]}
             format={pixels}
-            label="Corner Radius"
+            label={a.cornerRadius[0]}
             max={40}
             min={8}
             onChange={(cornerRadius) => onChange({ cornerRadius })}
@@ -60,35 +82,35 @@ export function AppearanceSections({ appearance, glassInfo, onChange, onReset }:
           />
           <ToggleRow
             checked={appearance.animations}
-            description="Springs, reveal and elastic glass"
-            label="Animations"
+            description={a.animations[1]}
+            label={a.animations[0]}
             onClick={() => onChange({ animations: !appearance.animations })}
           />
         </div>
       </section>
 
       <section aria-labelledby="window-glass-heading" className="settings-section">
-        <h2 id="window-glass-heading">Window Glass</h2>
+        <h2 id="window-glass-heading">{a.glassHeading}</h2>
         <div className="settings-grid">
           <PresetRow
             activeId={matchingPreset(GLASS_PRESETS, appearance)?.id ?? null}
-            label="Glass Template"
+            label={a.glassTemplate}
             onPick={(values) => onChange(values)}
-            presets={GLASS_PRESETS}
+            presets={localized(GLASS_PRESETS, t)}
           />
           <ChoiceRow<GlassSource>
             description={sourceHint}
-            label="Glass Source"
+            label={a.glassSource}
             onChange={(glassSource) => onChange({ glassSource })}
             options={[
-              { value: 'live', label: 'Live', disabled: !glassInfo.liveAvailable },
-              { value: 'snapshot', label: 'Snapshot' },
+              { value: 'live', label: a.sourceLive, disabled: !glassInfo.liveAvailable },
+              { value: 'snapshot', label: a.sourceSnapshot },
             ]}
             value={glassInfo.liveAvailable ? appearance.glassSource : 'snapshot'}
           />
           <SliderRow
-            description="How bright white on the desktop looks through the glass; lower is darker glass"
-            label="Whites"
+            description={a.whites[1]}
+            label={a.whites[0]}
             max={255}
             min={MIN_POINT_GAP}
             onChange={(whitePoint) =>
@@ -97,8 +119,8 @@ export function AppearanceSections({ appearance, glassInfo, onChange, onReset }:
             value={appearance.whitePoint}
           />
           <SliderRow
-            description="How bright black on the desktop looks through the glass; higher is more haze"
-            label="Blacks"
+            description={a.blacks[1]}
+            label={a.blacks[0]}
             max={255 - MIN_POINT_GAP}
             min={0}
             onChange={(blackPoint) =>
@@ -107,25 +129,19 @@ export function AppearanceSections({ appearance, glassInfo, onChange, onReset }:
             value={appearance.blackPoint}
           />
           <SliderRow
-            description={
-              liveFixed
-                ? "0 shows the desktop sharp; Windows' blur fades in and is full from 12 px"
-                : live && glassInfo.filtered
-                  ? 'Gaussian blur radius, like CSS blur(); 0 is perfectly clear'
-                  : 'Frost of the desktop snapshot; 0 shows it sharp'
-            }
+            description={liveFixed ? a.blurFixed : live && glassInfo.filtered ? a.blurFiltered : a.blurSnapshot}
             format={pixels}
-            label="Backdrop Blur"
+            label={a.blur}
             max={BACKDROP_BLUR_MAX}
             min={0}
             onChange={(backdropBlur) => onChange({ backdropBlur })}
             value={appearance.backdropBlur}
           />
           <SliderRow
-            description={liveFixed ? 'Set by Windows in live mode' : 'Colour strength of the backdrop'}
+            description={liveFixed ? a.saturationFixed : a.saturationHint}
             disabled={liveFixed}
             format={percent}
-            label="Backdrop Saturation"
+            label={a.saturation}
             max={250}
             min={50}
             onChange={(backdropSaturation) => onChange({ backdropSaturation })}
@@ -135,158 +151,154 @@ export function AppearanceSections({ appearance, glassInfo, onChange, onReset }:
       </section>
 
       <section aria-labelledby="edges-text-heading" className="settings-section">
-        <h2 id="edges-text-heading">Edges &amp; Text</h2>
+        <h2 id="edges-text-heading">{a.edgesHeading}</h2>
         <div className="settings-grid">
           <SliderRow
-            description="Light catching the top-left and bottom-right corners"
+            description={a.rimLight[1]}
             format={percent}
-            label="Rim Light"
+            label={a.rimLight[0]}
             max={100}
             min={0}
             onChange={(rimLight) => onChange({ rimLight })}
             value={appearance.rimLight}
           />
           <SliderRow
-            description="Top sheen, top light line and a brighter outline"
+            description={a.edgeHighlight[1]}
             format={percent}
-            label="Edge Highlight"
+            label={a.edgeHighlight[0]}
             max={100}
             min={0}
             onChange={(edgeHighlight) => onChange({ edgeHighlight })}
             value={appearance.edgeHighlight}
           />
           <ChoiceRow<TextTone>
-            description={
-              appearance.textTone === 'auto' ? `Auto picks ${autoTone} text for this glass` : 'Text and control colour'
-            }
-            label="Text"
+            description={appearance.textTone === 'auto' ? a.textAuto(autoTone) : a.textHint}
+            label={a.text}
             onChange={(textTone) => onChange({ textTone })}
             options={[
-              { value: 'auto', label: 'Auto' },
-              { value: 'light', label: 'White' },
-              { value: 'dark', label: 'Black' },
+              { value: 'auto', label: a.textOptions.auto },
+              { value: 'light', label: a.textOptions.light },
+              { value: 'dark', label: a.textOptions.dark },
             ]}
             value={appearance.textTone}
           />
           <SliderRow
-            description="Soft glow behind the text over bright or busy windows"
+            description={a.textHalo[1]}
             format={percent}
-            label="Text Halo"
+            label={a.textHalo[0]}
             max={100}
             min={0}
             onChange={(textHalo) => onChange({ textHalo })}
             value={appearance.textHalo}
           />
           <SliderRow
-            description="Opacity of times, sources and hints"
+            description={a.secondaryText[1]}
             format={percent}
-            label="Secondary Text"
+            label={a.secondaryText[0]}
             max={100}
             min={30}
             onChange={(secondaryTextOpacity) => onChange({ secondaryTextOpacity })}
             value={appearance.secondaryTextOpacity}
           />
         </div>
-      </section>
-
-      <section aria-labelledby="liquid-heading" className="settings-section">
-        <h2 id="liquid-heading">Liquid Glass</h2>
-        <LiquidPreview />
-        <div className="settings-grid">
-          <ToggleRow
-            checked={liquid}
-            description="Refracting edges on the search bar, filters and toasts"
-            label="Liquid Effect"
-            onClick={() => onChange({ liquidEnabled: !liquid })}
-          />
-          <PresetRow
-            activeId={matchingPreset(LIQUID_PRESETS, appearance)?.id ?? null}
-            disabled={!liquid}
-            label="Liquid Template"
-            onPick={(values) => onChange(values)}
-            presets={LIQUID_PRESETS}
-          />
-          <ChoiceRow<LiquidMode>
-            description="Shape of the bend at the edges"
-            label="Refraction Mode"
-            onChange={(liquidMode) => onChange({ liquidMode })}
-            options={[
-              { value: 'standard', label: 'Standard', disabled: !liquid },
-              { value: 'polar', label: 'Polar', disabled: !liquid },
-              { value: 'prominent', label: 'Prominent', disabled: !liquid },
-              { value: 'shader', label: 'Shader', disabled: !liquid },
-            ]}
-            value={appearance.liquidMode}
-          />
-          <SliderRow
-            description="Strength of the edge refraction"
-            disabled={!liquid}
-            label="Displacement"
-            max={150}
-            min={0}
-            onChange={(displacementScale) => onChange({ displacementScale })}
-            value={appearance.displacementScale}
-          />
-          <SliderRow
-            description={
-              glassInfo.mode === 'live'
-                ? 'Needs Snapshot glass: over live glass the colour split turns grey, so it is off'
-                : 'Colour fringing along the bent edge'
-            }
-            disabled={!liquid || glassInfo.mode === 'live'}
-            format={decimal(1)}
-            label="Chromatic Aberration"
-            max={10}
-            min={0}
-            onChange={(aberrationIntensity) => onChange({ aberrationIntensity })}
-            step={0.1}
-            value={appearance.aberrationIntensity}
-          />
-          <SliderRow
-            description="How far a hovered capsule follows the pointer"
-            disabled={!liquid || !appearance.animations}
-            format={decimal(2)}
-            label="Elasticity"
-            max={0.5}
-            min={0}
-            onChange={(elasticity) => onChange({ elasticity })}
-            step={0.01}
-            value={appearance.elasticity}
-          />
-          <SliderRow
-            description="Blur inside the liquid controls"
-            format={decimal(2)}
-            label="Frost"
-            max={1}
-            min={0}
-            onChange={(frost) => onChange({ frost })}
-            step={0.01}
-            value={appearance.frost}
-          />
-          <SliderRow
-            description="Colour strength seen through the controls"
-            format={percent}
-            label="Glass Saturation"
-            max={250}
-            min={50}
-            onChange={(liquidSaturation) => onChange({ liquidSaturation })}
-            value={appearance.liquidSaturation}
-          />
-          <SliderRow
-            description="Darkens the controls; calmer glass over bright content"
-            format={percent}
-            label="Shade"
-            max={50}
-            min={0}
-            onChange={(liquidShade) => onChange({ liquidShade })}
-            value={appearance.liquidShade}
-          />
-        </div>
-        <button className="ghost-button section-reset" onClick={onReset} type="button">
-          <ArrowCounterClockwise size={14} weight="bold" />
-          Reset Appearance
-        </button>
+        <ResetButton onReset={onReset} />
       </section>
     </>
+  )
+}
+
+/** The liquid glass of the controls (search bar, filters, capsules, toasts). */
+export function LiquidSections({ appearance, glassInfo, onChange, onReset }: AppearanceSectionsProps) {
+  const t = useT()
+  const a = t.appearance
+  const liquid = appearance.liquidEnabled
+  const modes: LiquidMode[] = ['standard', 'polar', 'prominent', 'shader']
+
+  return (
+    <section aria-label={t.settings.categories.liquid[0]} className="settings-section">
+      <LiquidPreview />
+      <div className="settings-grid">
+        <ToggleRow
+          checked={liquid}
+          description={a.liquidEffect[1]}
+          label={a.liquidEffect[0]}
+          onClick={() => onChange({ liquidEnabled: !liquid })}
+        />
+        <PresetRow
+          activeId={matchingPreset(LIQUID_PRESETS, appearance)?.id ?? null}
+          disabled={!liquid}
+          label={a.liquidTemplate}
+          onPick={(values) => onChange(values)}
+          presets={localized(LIQUID_PRESETS, t)}
+        />
+        <ChoiceRow<LiquidMode>
+          description={a.refraction[1]}
+          label={a.refraction[0]}
+          onChange={(liquidMode) => onChange({ liquidMode })}
+          options={modes.map((mode) => ({ value: mode, label: a.modes[mode], disabled: !liquid }))}
+          value={appearance.liquidMode}
+        />
+        <SliderRow
+          description={a.displacement[1]}
+          disabled={!liquid}
+          label={a.displacement[0]}
+          max={150}
+          min={0}
+          onChange={(displacementScale) => onChange({ displacementScale })}
+          value={appearance.displacementScale}
+        />
+        <SliderRow
+          description={glassInfo.mode === 'live' ? a.aberrationLive : a.aberrationHint}
+          disabled={!liquid || glassInfo.mode === 'live'}
+          format={decimal(1)}
+          label={a.aberration}
+          max={10}
+          min={0}
+          onChange={(aberrationIntensity) => onChange({ aberrationIntensity })}
+          step={0.1}
+          value={appearance.aberrationIntensity}
+        />
+        <SliderRow
+          description={a.elasticity[1]}
+          disabled={!liquid || !appearance.animations}
+          format={decimal(2)}
+          label={a.elasticity[0]}
+          max={0.5}
+          min={0}
+          onChange={(elasticity) => onChange({ elasticity })}
+          step={0.01}
+          value={appearance.elasticity}
+        />
+        <SliderRow
+          description={a.frost[1]}
+          format={decimal(2)}
+          label={a.frost[0]}
+          max={1}
+          min={0}
+          onChange={(frost) => onChange({ frost })}
+          step={0.01}
+          value={appearance.frost}
+        />
+        <SliderRow
+          description={a.liquidSaturation[1]}
+          format={percent}
+          label={a.liquidSaturation[0]}
+          max={250}
+          min={50}
+          onChange={(liquidSaturation) => onChange({ liquidSaturation })}
+          value={appearance.liquidSaturation}
+        />
+        <SliderRow
+          description={a.shade[1]}
+          format={percent}
+          label={a.shade[0]}
+          max={50}
+          min={0}
+          onChange={(liquidShade) => onChange({ liquidShade })}
+          value={appearance.liquidShade}
+        />
+      </div>
+      <ResetButton onReset={onReset} />
+    </section>
   )
 }

@@ -12,6 +12,7 @@ describe('HistoryCard', () => {
 
     render(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={onActivate}
@@ -23,15 +24,11 @@ describe('HistoryCard', () => {
           type: 'rich_text',
           summary: 'Meeting summary with bullet formatting',
           detail: 'Meeting summary with bullet formatting',
-          meta: 'Rich text · 2.1 KB',
           sourceApp: 'Word',
           sourceGlyph: 'W',
           pinned: false,
           createdAt: '2026-03-11T08:30:00',
           updatedAt: '2026-03-11T08:30:00',
-          contentHash: 'hash-rich-1',
-          plainText: 'Meeting summary with bullet formatting',
-          richText: '<p>Meeting summary with bullet formatting</p>',
           imagePath: null,
           imageWidth: null,
           imageHeight: null,
@@ -55,15 +52,11 @@ describe('HistoryCard', () => {
       type: 'image' as const,
       summary: 'Image 10 x 10',
       detail: 'Image 10 x 10',
-      meta: 'Image',
       sourceApp: 'Snipping Tool',
       sourceGlyph: 'ST',
       pinned: false,
       createdAt: '2026-10-28T15:30:12',
       updatedAt: '2026-10-28T15:30:12',
-      contentHash: 'hash-image-1',
-      plainText: null,
-      richText: null,
       imagePath: 'C:/temp/image.png',
       imageWidth: 10,
       imageHeight: 10,
@@ -72,6 +65,7 @@ describe('HistoryCard', () => {
 
     const { container, rerender } = render(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={vi.fn()}
@@ -90,6 +84,7 @@ describe('HistoryCard', () => {
 
     rerender(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={vi.fn()}
@@ -97,7 +92,7 @@ describe('HistoryCard', () => {
         onDelete={vi.fn()}
         onPinToggle={vi.fn()}
         onSaveImage={onSaveImage}
-        record={{ ...image, id: 'text-1', type: 'text', imagePath: null, plainText: 'hi' }}
+        record={{ ...image, id: 'text-1', type: 'text', imagePath: null }}
       />,
     )
     expect(screen.queryByRole('button', { name: 'Save image' })).not.toBeInTheDocument()
@@ -106,6 +101,7 @@ describe('HistoryCard', () => {
   test('renders an image thumbnail when the record contains a saved preview path', () => {
     render(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={vi.fn()}
@@ -117,15 +113,11 @@ describe('HistoryCard', () => {
           type: 'image',
           summary: 'Screenshot capture with 1440 x 900 preview ready to paste.',
           detail: 'Screenshot capture with 1440 x 900 preview ready to paste.',
-          meta: 'Image · 1440 x 900',
           sourceApp: 'Snipping Tool',
           sourceGlyph: 'ST',
           pinned: false,
           createdAt: '2026-03-11T08:30:00',
           updatedAt: '2026-03-11T08:30:00',
-          contentHash: 'hash-image-1',
-          plainText: null,
-          richText: null,
           imagePath: 'C:/temp/image.png',
           imageWidth: 1440,
           imageHeight: 900,
@@ -134,7 +126,8 @@ describe('HistoryCard', () => {
       />,
     )
 
-    expect(screen.getByRole('img', { name: 'Screenshot capture with 1440 x 900 preview ready to paste.' })).toHaveAttribute(
+    // Image clips are named from their size, in the app's language.
+    expect(screen.getByRole('img', { name: 'Image 1440 × 900' })).toHaveAttribute(
       'src',
       'C:/temp/image.png',
     )
@@ -143,6 +136,7 @@ describe('HistoryCard', () => {
   test('shows the source app icon when there is one, and the glyph if it fails to load', () => {
     const { container } = render(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={vi.fn()}
@@ -154,16 +148,12 @@ describe('HistoryCard', () => {
           type: 'text',
           summary: 'Copied from VS Code',
           detail: 'Copied from VS Code',
-          meta: 'Text',
           sourceApp: 'Visual Studio Code',
           sourceGlyph: 'VS',
           sourceIcon: 'file:///C:/data/icons/code.png',
           pinned: false,
           createdAt: '2026-10-22T08:30:00',
           updatedAt: '2026-10-22T08:30:00',
-          contentHash: 'hash-text-2',
-          plainText: 'Copied from VS Code',
-          richText: null,
           imagePath: null,
           imageWidth: null,
           imageHeight: null,
@@ -183,6 +173,7 @@ describe('HistoryCard', () => {
   test('renders the source app glyph for non-image records', () => {
     render(
       <HistoryCard
+        timeLabel="just now"
         isActive={false}
         isPinned={false}
         onActivate={vi.fn()}
@@ -194,15 +185,11 @@ describe('HistoryCard', () => {
           type: 'text',
           summary: 'Copied terminal output',
           detail: 'Copied terminal output',
-          meta: 'Text',
           sourceApp: 'WindowsTerminal',
           sourceGlyph: 'WT',
           pinned: false,
           createdAt: '2026-03-11T08:30:00',
           updatedAt: '2026-03-11T08:30:00',
-          contentHash: 'hash-text-1',
-          plainText: 'Copied terminal output',
-          richText: null,
           imagePath: null,
           imageWidth: null,
           imageHeight: null,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -8,6 +9,20 @@ from .runtime import resolve_desktop_path
 DEFAULT_HISTORY_LIMIT = 25
 MIN_HISTORY_LIMIT = 1
 MAX_HISTORY_LIMIT = 5000
+LANGUAGES = ("zh", "en")
+
+
+def system_language() -> str:
+    """Chinese when Windows shows Chinese, English otherwise."""
+    try:
+        lang_id = int(ctypes.windll.kernel32.GetUserDefaultUILanguage())
+    except (AttributeError, OSError):
+        return "en"
+    return "zh" if lang_id & 0x3FF == 0x04 else "en"
+
+
+def language_from_payload(value: object) -> str:
+    return value if isinstance(value, str) and value in LANGUAGES else system_language()
 
 
 @dataclass(slots=True)
@@ -34,6 +49,26 @@ class HistoryRecord:
 
     def _normalize_image_path(self) -> str | None:
         return _as_uri(self.image_path)
+
+    def to_page_dict(self) -> dict[str, object]:
+        """What the panel shows of a clip. The rich text (often tens of KB of HTML), the plain
+        text and the hash stay in the backend, which is the only side that pastes or compares."""
+        return {
+            "id": self.id,
+            "type": self.type,
+            "summary": self.summary,
+            "detail": self.detail,
+            "sourceApp": self.source_app,
+            "sourceGlyph": self.source_glyph,
+            "pinned": self.pinned,
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+            "imagePath": self._normalize_image_path(),
+            "imageWidth": self.image_width,
+            "imageHeight": self.image_height,
+            "filePaths": list(self.file_paths),
+            "sourceIcon": _as_uri(self.source_icon),
+        }
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -238,9 +273,9 @@ LEGACY_GLASS_KEYS = {"theme", "material", "overLight", "backdropContrast", "tint
 
 
 def _migrate_legacy_appearance(data: dict[str, object]) -> dict[str, object]:
-    """Same as migrateLegacy in frontend/src/app/appearance.ts: settings saved with a "material"
-    and a light/dark "theme" (which swapped hidden values) become the parameters they stood for,
-    and the old contrast, brightness and tint become the white and black points they produce."""
+    """Settings saved with a "material" and a light/dark "theme" (which swapped hidden values)
+    become the parameters they stood for, and the old contrast, brightness and tint become the
+    white and black points they produce. The page only ever gets settings converted here."""
     if not LEGACY_GLASS_KEYS & data.keys():
         return data
     migrated = dict(data)
@@ -327,9 +362,12 @@ class SettingsState:
     appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
     # Folder the save button on image clips writes to.
     image_save_path: str = field(default_factory=lambda: str(resolve_desktop_path()))
+    # "zh" or "en": the whole app, page and tray, is in one language.
+    language: str = field(default_factory=system_language)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "language": self.language,
             "launchOnStartup": self.launch_on_startup,
             "closeToTray": self.close_to_tray,
             "followSystemTheme": self.follow_system_theme,
@@ -359,6 +397,7 @@ class SettingsState:
             shortcuts=ShortcutBindings.from_dict(dict(payload["shortcuts"])),
             appearance=AppearanceSettings.from_dict(_optional_dict(payload.get("appearance"))),
             image_save_path=image_save_path_from_payload(payload.get("imageSavePath")),
+            language=language_from_payload(payload.get("language")),
         )
 
 
@@ -371,21 +410,21 @@ def image_save_path_from_payload(value: object) -> str:
 
 @dataclass(slots=True)
 class ToastMessage:
-    title: str
-    message: str
+    """What happened (kind) and its values; the page words it in the app's language."""
+
+    kind: str
     tone: str
+    params: dict[str, object] = field(default_factory=dict)
     action_kind: str | None = None
-    action_label: str | None = None
     id: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
-            "title": self.title,
-            "message": self.message,
+            "kind": self.kind,
+            "params": dict(self.params),
             "tone": self.tone,
             "actionKind": self.action_kind,
-            "actionLabel": self.action_label,
         }
 
 

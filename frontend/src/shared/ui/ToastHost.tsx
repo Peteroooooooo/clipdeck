@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { X } from '@phosphor-icons/react'
+import { toastText, useT } from '../../app/i18n'
 import type { ToastMessage } from '../../app/types'
 import { LiquidGlass } from './liquid/LiquidGlass'
 import { SPRING_SMOOTH } from './motionTokens'
@@ -14,7 +15,9 @@ interface ToastHostProps {
 }
 
 export function ToastHost({ toast, onAction, onDismiss }: ToastHostProps) {
+  const t = useT()
   const toastId = toast?.id
+  const text = toast ? toastText(toast, t) : null
 
   useEffect(() => {
     if (!toastId) {
@@ -42,15 +45,15 @@ export function ToastHost({ toast, onAction, onDismiss }: ToastHostProps) {
             <LiquidGlass className={`toast is-${toast.tone}`} cornerRadius={22}>
               <span className="toast-dot" aria-hidden="true" />
               <div className="toast-copy">
-                <p className="toast-title">{toast.title}</p>
-                <p className="toast-text">{toast.message}</p>
+                <p className="toast-title">{text?.title}</p>
+                {text?.message ? <p className="toast-text">{text.message}</p> : null}
               </div>
-              {toast.actionLabel ? (
+              {toast.actionKind === 'undo_delete' ? (
                 <button className="toast-action" onClick={onAction} type="button">
-                  {toast.actionLabel}
+                  {t.toast.undo}
                 </button>
               ) : null}
-              <button aria-label="Dismiss" className="toast-close" onClick={onDismiss} type="button">
+              <button aria-label={t.toast.dismiss} className="toast-close" onClick={onDismiss} type="button">
                 <X size={14} weight="bold" />
               </button>
             </LiquidGlass>

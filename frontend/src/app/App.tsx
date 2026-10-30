@@ -6,6 +6,7 @@ import { LiquidGlassContext } from '../shared/ui/liquid/liquidContext'
 import { SPRING_SMOOTH } from '../shared/ui/motionTokens'
 import { ToastHost } from '../shared/ui/ToastHost'
 import { applyAppearance, DEFAULT_APPEARANCE } from './appearance'
+import { I18nContext, stringsFor } from './i18n'
 import { desktopApi, subscribeSnapshot } from './pywebview'
 import type { AppearanceSettings, AppSnapshot, SettingsState } from './types'
 
@@ -168,10 +169,17 @@ function App() {
     await syncSnapshot(desktopApi.clearAllHistory())
   }
 
+  const language = snapshot?.settings.language ?? (navigator.language.startsWith('zh') ? 'zh' : 'en')
+  const t = stringsFor(language)
+  // Lets the browser pick Chinese glyph forms and line breaking for Chinese text.
+  useEffect(() => {
+    document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'
+  }, [language])
+
   if (!snapshot) {
     return (
       <main className="app-shell">
-        <div className="app-loading">正在初始化 ClipDeck…</div>
+        <div className="app-loading">{t.loading}</div>
       </main>
     )
   }
@@ -220,6 +228,7 @@ function App() {
     )
 
   return (
+    <I18nContext.Provider value={t}>
     <MotionConfig reducedMotion={appearance.animations ? 'user' : 'always'}>
       <LiquidGlassContext.Provider value={liquidSettings}>
       {/* A press on the transparent shadow margin around the panel counts as clicking away. */}
@@ -251,6 +260,7 @@ function App() {
       </main>
       </LiquidGlassContext.Provider>
     </MotionConfig>
+    </I18nContext.Provider>
   )
 }
 

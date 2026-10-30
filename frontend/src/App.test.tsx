@@ -4,6 +4,18 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import App from './App'
 import { desktopApi, resetDesktopApiMock } from './app/pywebview'
 
+type User = ReturnType<typeof userEvent.setup>
+
+/** Opens the settings and, if given, one of its categories (named by its title). */
+async function openSettings(user: User, category?: string) {
+  await user.click(screen.getByRole('button', { name: 'Settings' }))
+  expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+  if (category) {
+    await user.click(screen.getByRole('button', { name: new RegExp(`^${category.replace('&', '\\&')}`) }))
+    expect(await screen.findByRole('heading', { name: category })).toBeInTheDocument()
+  }
+}
+
 describe('App shell', () => {
   beforeEach(() => {
     cleanup()
@@ -27,25 +39,58 @@ describe('App shell', () => {
     expect(alwaysOnTopButton).toHaveAttribute('aria-pressed', 'false')
     expect(alwaysOnTopButton.compareDocumentPosition(recordingButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user)
+    // The settings open on a short list of categories, each a page of its own.
+    const categories = within(screen.getByRole('navigation', { name: 'Settings' })).getAllByRole('button')
+    expect(categories.map((button) => button.querySelector('strong')?.textContent)).toEqual([
+      'General',
+      'Capture',
+      'Shortcuts',
+      'History & Storage',
+      'Window Glass',
+      'Liquid Glass',
+    ])
+    expect(screen.queryByRole('button', { name: 'Record Text' })).not.toBeInTheDocument()
 
-    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Capture' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Shortcuts' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'History & Storage' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Data Management' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Recording' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Close to Tray' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Follow System Theme' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Capture/ }))
+    expect(await screen.findByRole('heading', { name: 'Capture' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record Text' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Record Rich Text' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Record Images' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Record Files' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('spinbutton', { name: 'History Limit' })).toHaveValue(25)
-    expect(screen.queryByRole('spinbutton', { name: 'Text Clip Limit' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('spinbutton', { name: 'Image Clip Limit' })).not.toBeInTheDocument()
+
+    // Back returns to the list, not to the panel.
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(await screen.findByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^History & Storage/ }))
+    expect(await screen.findByRole('spinbutton', { name: 'History Limit' })).toHaveValue(25)
     expect(screen.getByRole('button', { name: 'Clear All History' })).toBeInTheDocument()
+  })
+
+  test('switching the language turns the whole app to it', async () => {
+    const user = userEvent.setup()
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'All' })).toBeInTheDocument()
+
+    await openSettings(user, 'General')
+    await user.click(screen.getByRole('radio', { name: '中文' }))
+    // Edited settings take effect on Save, like every other setting.
+    expect(screen.getByRole('heading', { name: 'General' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByRole('tab', { name: '全部' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
+    expect(screen.getByText('最近')).toBeInTheDocument()
+    expect(await screen.findByRole('status')).toHaveTextContent('设置已保存')
+    expect(document.documentElement.lang).toBe('zh-CN')
+    expect(screen.queryByRole('tab', { name: 'All' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '设置' }))
+    expect(await screen.findByRole('heading', { name: '设置' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^窗口玻璃/ })).toBeInTheDocument()
   })
 
   test('clears only recent history from the quick panel', async () => {
@@ -81,7 +126,23 @@ describe('App shell', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Clear' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('已清除未固定记录')
+    expect(await screen.findByRole('status')).toHaveTextContent('Recent clips cleared')
+  })
+
+  test('clearing the recent clips can be undone', async () => {
+    const user = userEvent.setup()
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
+    const initialCount = document.querySelectorAll('[data-record-id]').length
+
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll('[data-record-id]')).toHaveLength(initialCount)
+    })
   })
 
   test('offers undo after deleting a record', async () => {
@@ -94,7 +155,7 @@ describe('App shell', () => {
 
     const [deleteButton] = screen.getAllByRole('button', { name: 'Delete' })
     await user.click(deleteButton)
-    await user.click(await screen.findByRole('button', { name: '撤销' }))
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
 
     await vi.waitFor(() => {
       expect(document.querySelectorAll('[data-record-id]')).toHaveLength(initialCount)
@@ -158,7 +219,7 @@ describe('App shell', () => {
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
     expect(screen.getByText('Build review notes for the quick panel and tray wiring.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
     const [clearHistoryButton] = await screen.findAllByRole('button', { name: 'Clear All History' })
     await user.click(clearHistoryButton)
     const [cancelButton] = screen.getAllByRole('button', { name: 'Cancel' })
@@ -177,7 +238,7 @@ describe('App shell', () => {
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
     expect(screen.getByText('Build review notes for the quick panel and tray wiring.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
     const [clearHistoryButton] = await screen.findAllByRole('button', { name: 'Clear All History' })
     await user.click(clearHistoryButton)
     const [cancelButton] = screen.getAllByRole('button', { name: 'Cancel' })
@@ -290,7 +351,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'Shortcuts')
     const deleteShortcutInput = screen.getByDisplayValue('Delete')
     await user.clear(deleteShortcutInput)
     await user.type(deleteShortcutInput, 'Backspace')
@@ -314,7 +375,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     expect(screen.getByRole('button', { name: 'Browse' })).toBeInTheDocument()
   })
@@ -326,7 +387,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     expect(screen.getByText('%LOCALAPPDATA%\\ClipDeck\\data')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Browse' }))
@@ -346,7 +407,7 @@ describe('App shell', () => {
     await user.click(saveButton)
 
     expect(saveImageSpy).toHaveBeenCalledTimes(1)
-    expect(await screen.findByText('图片已保存')).toBeInTheDocument()
+    expect(await screen.findByText('Image saved')).toBeInTheDocument()
   })
 
   test('the image save folder defaults to the Desktop and can be changed', async () => {
@@ -356,7 +417,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
     expect(screen.getByTestId('image-save-path-value')).toHaveTextContent('%USERPROFILE%\\Desktop')
 
     await user.click(screen.getByRole('button', { name: 'Browse image save folder' }))
@@ -370,7 +431,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     const storagePathBlock = screen.getByTestId('storage-path-value')
     const storagePathStack = screen.getByTestId('storage-path-stack')
@@ -389,7 +450,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     const historyLimitInput = screen.getByRole('spinbutton', { name: 'History Limit' })
     await user.clear(historyLimitInput)
@@ -398,7 +459,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     expect(screen.getByRole('spinbutton', { name: 'History Limit' })).toHaveValue(12)
   })
@@ -410,7 +471,7 @@ describe('App shell', () => {
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'History & Storage')
 
     const historyLimitInput = screen.getByRole('spinbutton', { name: 'History Limit' })
     expect(historyLimitInput).toHaveValue(25)
@@ -434,8 +495,7 @@ describe('App shell', () => {
     expect(document.documentElement.style.getPropertyValue('--tint-alpha')).toBe('0.4078')
     expect(document.documentElement.style.getPropertyValue('--tint-gray')).toBe('31.88')
 
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('heading', { name: 'Liquid Glass' })).toBeInTheDocument()
+    await openSettings(user, 'Window Glass')
     const glassTemplates = screen.getByRole('radiogroup', { name: 'Glass Template' })
     expect(within(glassTemplates).getByRole('radio', { name: 'Dark Glass' })).toHaveAttribute('aria-checked', 'true')
     // Only the two looks that really differ: dark and light.
@@ -479,7 +539,9 @@ describe('App shell', () => {
     await vi.waitFor(() => expect(document.documentElement.style.getPropertyValue('--window-radius')).toBe('32px'))
     await vi.waitFor(() => expect(previewSpy).toHaveBeenCalled())
 
-    // Liquid settings are previewed on sample glass inside the settings page itself.
+    // Liquid settings are previewed on sample glass inside their own page; the draft carries over.
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await user.click(await screen.findByRole('button', { name: /^Liquid Glass/ }))
     const preview = screen.getByTestId('liquid-preview')
     expect(preview.querySelectorAll('.liquid.is-liquid')).toHaveLength(2)
     await user.click(screen.getByRole('button', { name: 'Liquid Effect' }))
@@ -502,7 +564,7 @@ describe('App shell', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'Liquid Glass')
     await user.click(await screen.findByRole('button', { name: 'Liquid Effect' }))
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -531,21 +593,21 @@ describe('App shell', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'Shortcuts')
     const toggleInput = screen.getByDisplayValue('Alt + Space')
     await user.clear(toggleInput)
     await user.type(toggleInput, 'Ctrl + K')
     await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'Shortcuts')
     await user.click(await screen.findByRole('button', { name: 'Restore Defaults' }))
     expect(await screen.findByDisplayValue('Alt + Space')).toBeInTheDocument()
 
     const [cancelButton] = screen.getAllByRole('button', { name: 'Cancel' })
     await user.click(cancelButton)
     expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Settings' }))
+    await openSettings(user, 'Shortcuts')
     expect(await screen.findByDisplayValue('Ctrl + K')).toBeInTheDocument()
   })
 

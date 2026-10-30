@@ -92,3 +92,14 @@ def test_tray_clear_all_history_runs_after_confirmation() -> None:
     tray._handle_clear_all_history(tray.icon, None)
 
     assert state.cleared is True
+
+
+def test_tray_menu_follows_the_app_language() -> None:
+    assert menu_labels(is_recording_paused=False, language="en") == [
+        "Show Panel",
+        "Pause Recording",
+        "Open Settings",
+        "Clear All History",
+        f"Exit {APP_NAME}",
+    ]
+    assert menu_labels(is_recording_paused=True, language="en")[1] == "Resume Recording"

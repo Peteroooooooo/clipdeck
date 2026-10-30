@@ -1,7 +1,7 @@
 .venv/
 .pytest_cache/
 .agent/
-.tmp-debug-data/
+.vite/
 COMMAND.TXT
 
 __pycache__/
