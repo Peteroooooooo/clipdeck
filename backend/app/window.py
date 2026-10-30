@@ -48,6 +48,8 @@ PAGE_LOAD_TIMEOUT_S = 20.0
 # pywebview's evaluate_js waits for the page without a timeout: if the page's renderer has died,
 # a summon would wait forever and take the shortcut and the tray down with it.
 JS_CALL_TIMEOUT_S = 1.0
+# A summon reveals the panel once the page's frames reach the screen, but never later than this.
+REVEAL_WAIT_LIMIT_S = 0.25
 
 
 def resolve_frontend_entry(*, project_root: Path, dev_mode: bool) -> str | Path:
@@ -131,6 +133,8 @@ class AppWindowController:
         # the reveal runs once the page reports ready.
         self._reveal_pending = False
         self._visibility_seq = 0
+        # The summon whose page has not yet started its reveal (see show).
+        self._awaiting_reveal: int | None = None
         self._is_always_on_top = False
 
     def create(self) -> webview.Window:
@@ -169,6 +173,8 @@ class AppWindowController:
             self.bridge._bind_conceal_window(lambda: self.hide(animated=True))
         if hasattr(self.bridge, "_bind_page_ready"):
             self.bridge._bind_page_ready(self.page_ready)
+        if hasattr(self.bridge, "_bind_reveal_started"):
+            self.bridge._bind_reveal_started(self.reveal_started)
         if self._show_when_ready:
             self._start_show_fallback(PAGE_LOAD_TIMEOUT_S)
         return self.window
@@ -191,8 +197,29 @@ class AppWindowController:
             move_window_near_pointer(self.window)
         if was_hidden and not self._is_loaded:
             self._reveal_pending = True
+        if was_hidden and self._is_loaded and not mid_conceal:
+            # Just after a hidden window is shown, WebView2's first frames can take 60-130 ms to
+            # reach the screen (measured: its GPU process waits in Present), while the native glass
+            # is drawn by Windows at once. So the window comes up with both still invisible, the page
+            # waits until its frames flow, then starts its reveal and calls reveal_started, which
+            # fades the glass in with it.
+            self._reveal_pending = False
+            self._visibility_seq += 1
+            seq = self._visibility_seq
+            self._awaiting_reveal = seq
+            self.window.show()
+            self.window.restore()
+            self._apply_always_on_top()
+            self._is_hidden = False
+            self._dispatch_event("clipdeck:prepare", {"seq": seq})
+            fallback = threading.Timer(REVEAL_WAIT_LIMIT_S, self._reveal_after_wait, args=(seq,))
+            fallback.daemon = True
+            fallback.start()
+            self._send_backdrop()
+            return
         if was_hidden and self._is_loaded:
             self._reveal_pending = False
+            self._awaiting_reveal = None
             # The page has sat concealed (transparent, slightly small) since it was
             # hidden, so the frame WebView2 shows first is already the reveal's starting point;
             # the page and the native glass then grow in together.
@@ -207,6 +234,21 @@ class AppWindowController:
             # The desktop grab (~0.1s) runs after showing so summoning never waits on it; the
             # panel excludes itself from the capture and blends in the fresh glass.
             self._send_backdrop()
+
+    def reveal_started(self, seq: int) -> None:
+        """The page's reveal for summon `seq` has begun: the native glass follows."""
+        if self._awaiting_reveal != seq or self._is_hidden:
+            return
+        self._awaiting_reveal = None
+        self._animate_glass(opacity=1.0, scale=1.0, ms=REVEAL_MS, from_concealed=True)
+
+    def _reveal_after_wait(self, seq: int) -> None:
+        # The page never reported back: reveal both anyway rather than leave the panel invisible.
+        if self._awaiting_reveal != seq or self._is_hidden:
+            return
+        self._awaiting_reveal = None
+        self._animate_glass(opacity=1.0, scale=1.0, ms=REVEAL_MS, from_concealed=True)
+        self._dispatch_event("clipdeck:reveal", {"seq": seq})
 
     def page_ready(self) -> None:
         """The page has drawn its first real frame (data loaded): a normal launch shows now."""
@@ -403,6 +445,7 @@ class AppWindowController:
         # Mark hidden first so the Deactivate event raised by hiding is not treated as a blur.
         was_hidden = self._is_hidden
         self._is_hidden = True
+        self._awaiting_reveal = None
         if was_hidden:
             pending = self._conceal_token
             if pending is not None and not animated:

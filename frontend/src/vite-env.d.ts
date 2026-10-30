@@ -29,6 +29,7 @@ declare global {
         begin_window_drag: (grabX: number, grabY: number) => Promise<void>
         begin_window_resize?: (edge: 'top' | 'bottom', grabY: number) => Promise<void>
         page_ready?: () => Promise<void>
+        reveal_started?: (seq: number) => Promise<void>
       }
     }
   }

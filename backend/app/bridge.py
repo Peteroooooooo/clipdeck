@@ -19,12 +19,16 @@ class AppBridge:
         self._begin_window_resize: Callable[[str, float], None] | None = None
         self._conceal_window: Callable[[], None] | None = None
         self._page_ready: Callable[[], None] | None = None
+        self._reveal_started: Callable[[int], None] | None = None
 
     def _bind_conceal_window(self, conceal_window: Callable[[], None]) -> None:
         self._conceal_window = conceal_window
 
     def _bind_page_ready(self, page_ready: Callable[[], None]) -> None:
         self._page_ready = page_ready
+
+    def _bind_reveal_started(self, reveal_started: Callable[[int], None]) -> None:
+        self._reveal_started = reveal_started
 
     def _bind_hide_window(self, hide_window: Callable[[], None]) -> None:
         self._hide_window = hide_window
@@ -140,6 +144,11 @@ class AppBridge:
         """The page has drawn its first frame with data; a normal launch may show the window."""
         if self._page_ready is not None:
             self._page_ready()
+
+    def reveal_started(self, seq: int) -> None:
+        """The page's frames reach the screen again after a summon and its reveal has begun."""
+        if self._reveal_started is not None:
+            self._reveal_started(int(seq))
 
     def pick_storage_path(self, current_path: str) -> str | None:
         if self._pick_storage_path is None:
