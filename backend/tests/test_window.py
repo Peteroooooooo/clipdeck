@@ -141,7 +141,7 @@ def test_hiding_puts_the_page_to_sleep_and_showing_wakes_it_in_order(monkeypatch
         thread.join(timeout=2)
 
     assert len(scripts) == 2
-    assert "'clipdeck:reveal'" in scripts[0] and '"seq": 1' in scripts[0]
+    assert "'clipdeck:prepare'" in scripts[0] and '"seq": 1' in scripts[0]
     assert "'clipdeck:sleep'" in scripts[1] and '"seq": 2' in scripts[1]
 
 
@@ -190,7 +190,7 @@ def test_page_loaded_for_a_normal_launch_renders_hidden_then_shows_when_ready(mo
 
     controller.page_ready()
 
-    assert order[-4:] == ["clipdeck:sleep", "warm", "clipdeck:reveal", "show"]
+    assert order[-4:] == ["clipdeck:sleep", "warm", "show", "clipdeck:prepare"]
     assert controller.is_hidden is False
     controller.page_ready()
     assert order.count("show") == 1
@@ -514,7 +514,7 @@ def test_window_does_not_hide_on_blur_while_dialog_open_or_pinned_or_disabled():
     assert disabled_hidden["count"] == 0
 
 
-def test_showing_a_hidden_loaded_window_asks_the_page_to_play_its_reveal(monkeypatch):
+def test_showing_a_hidden_loaded_window_asks_the_page_to_prepare_its_reveal(monkeypatch):
     import backend.app.window as window_module
 
     monkeypatch.setattr(window_module, "move_window_near_pointer", lambda _window: None)
@@ -538,7 +538,89 @@ def test_showing_a_hidden_loaded_window_asks_the_page_to_play_its_reveal(monkeyp
     controller.show()
 
     assert len(scripts) == 1
-    assert "clipdeck:reveal" in scripts[0]
+    assert "clipdeck:prepare" in scripts[0]
+
+
+def _summon_controller(monkeypatch, events: list[str]):
+    import backend.app.window as window_module
+
+    monkeypatch.setattr(window_module, "move_window_near_pointer", lambda _window: None)
+    controller = AppWindowController(
+        project_root=TEST_PROJECT_ROOT,
+        bridge=SimpleNamespace(),
+        snapshot_provider=lambda: {},
+        dev_mode=False,
+        start_hidden=True,
+        set_on_top_callback=lambda _window, _enabled: None,
+        backdrop_capture=lambda _window, _appearance: None,
+    )
+    controller.window = SimpleNamespace(
+        show=lambda: events.append("show"),
+        hide=lambda: events.append("hide"),
+        restore=lambda: None,
+        evaluate_js=lambda script: events.append(script.split("'")[1]),
+    )
+    controller._glass = SimpleNamespace(
+        mode="snapshot",
+        animate=lambda **kw: events.append(f"glass {kw['opacity']:.0f}"),
+    )
+    controller._is_loaded = True
+    return controller
+
+
+def test_the_glass_waits_for_the_page_to_start_its_reveal(monkeypatch):
+    import backend.app.window as window_module
+
+    monkeypatch.setattr(window_module, "REVEAL_WAIT_LIMIT_S", 5.0)
+    events: list[str] = []
+    controller = _summon_controller(monkeypatch, events)
+
+    controller.show()
+    assert "glass 1" not in events
+
+    controller.reveal_started(0)  # an older summon's report changes nothing
+    assert "glass 1" not in events
+    controller.reveal_started(1)
+    controller.reveal_started(1)
+    assert events.count("glass 1") == 1
+    assert "clipdeck:reveal" not in events  # the page has already started its own reveal
+
+
+def test_a_page_that_never_reports_back_is_revealed_after_the_wait_limit(monkeypatch):
+    import time
+
+    import backend.app.window as window_module
+
+    monkeypatch.setattr(window_module, "REVEAL_WAIT_LIMIT_S", 0.05)
+    events: list[str] = []
+    controller = _summon_controller(monkeypatch, events)
+
+    controller.show()
+    deadline = time.monotonic() + 2
+    while "clipdeck:reveal" not in events and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert events[-2:] == ["glass 1", "clipdeck:reveal"]
+    controller.reveal_started(1)
+    assert events.count("glass 1") == 1
+
+
+def test_hiding_before_the_page_reports_back_cancels_the_reveal(monkeypatch):
+    import time
+
+    import backend.app.window as window_module
+
+    monkeypatch.setattr(window_module, "REVEAL_WAIT_LIMIT_S", 0.05)
+    events: list[str] = []
+    controller = _summon_controller(monkeypatch, events)
+
+    controller.show()
+    controller.hide()
+    time.sleep(0.15)
+    controller.reveal_started(1)
+
+    assert "glass 1" not in events
+    assert "clipdeck:reveal" not in events
 
 
 def test_backdrop_payload_carries_image_and_alignment_in_physical_pixels():
@@ -551,7 +633,7 @@ def test_backdrop_payload_carries_image_and_alignment_in_physical_pixels():
     assert (payload["windowLeft"], payload["windowTop"]) == (-1500, 200)
 
 
-def test_showing_a_hidden_window_wakes_the_page_before_showing_then_updates_backdrop(monkeypatch):
+def test_showing_a_hidden_window_shows_it_then_prepares_the_page_then_updates_backdrop(monkeypatch):
     import backend.app.window as window_module
 
     monkeypatch.setattr(window_module, "move_window_near_pointer", lambda _window: None)
@@ -574,7 +656,7 @@ def test_showing_a_hidden_window_wakes_the_page_before_showing_then_updates_back
 
     controller.show()
 
-    assert events == ["clipdeck:reveal", "show", "clipdeck:backdrop"]
+    assert events == ["show", "clipdeck:prepare", "clipdeck:backdrop"]
 
 
 def test_appearance_settings_fill_defaults_and_clamp_hand_edited_values():
