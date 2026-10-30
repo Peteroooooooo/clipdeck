@@ -5,7 +5,7 @@
 // is not missed.
 //
 // The same events drive the summon motion. Asleep, the panel also sits "concealed" (transparent,
-// slightly small and blurred, html.is-concealed), so the frame WebView2 shows first when the
+// slightly small, html.is-concealed), so the frame WebView2 shows first when the
 // window appears is already the start of the reveal, never a flash of the old panel. The backend
 // sends "clipdeck:reveal" just before showing the window and "clipdeck:conceal" just before a
 // short animated hide. The native glass under the page runs the same motion on the compositor.
@@ -20,8 +20,11 @@ export const CONCEAL_SCALE = 0.97
 export const REVEAL_MS = 260
 export const CONCEAL_MS = 130
 
-const CONCEALED: Keyframe = { opacity: 0, transform: `scale(${CONCEAL_SCALE})`, filter: 'blur(6px)' }
-const SHOWN: Keyframe = { opacity: 1, transform: 'none', filter: 'blur(0px)' }
+// Opacity and scale only. A blur filter on the whole panel re-renders every glass surface inside it
+// each frame; after a long idle those frames came out ~100 ms late, so the panel hung half faded
+// over the native glass (which keeps animating on its own) and then jumped in.
+const CONCEALED: Keyframe = { opacity: 0, transform: `scale(${CONCEAL_SCALE})` }
+const SHOWN: Keyframe = { opacity: 1, transform: 'none' }
 const STAGGERED_CARDS = 8
 
 function motionAllowed() {
@@ -134,6 +137,5 @@ function currentLook(panel: HTMLElement): Keyframe {
   return {
     opacity: Number.isNaN(opacity) ? 1 : opacity,
     transform: style.transform && style.transform !== 'none' ? style.transform : 'none',
-    filter: style.filter && style.filter !== 'none' ? style.filter : 'blur(0px)',
   }
 }

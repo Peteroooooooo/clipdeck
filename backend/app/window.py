@@ -193,7 +193,7 @@ class AppWindowController:
             self._reveal_pending = True
         if was_hidden and self._is_loaded:
             self._reveal_pending = False
-            # The page has sat concealed (transparent, slightly small, blurred) since it was
+            # The page has sat concealed (transparent, slightly small) since it was
             # hidden, so the frame WebView2 shows first is already the reveal's starting point;
             # the page and the native glass then grow in together.
             self._animate_glass(opacity=1.0, scale=1.0, ms=REVEAL_MS, from_concealed=not mid_conceal)

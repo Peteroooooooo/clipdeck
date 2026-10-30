@@ -2358,7 +2358,6 @@ html.is-asleep *::after {
 html.is-concealed .glass-window {
   opacity: 0.002;
   transform: scale(0.97);
-  filter: blur(6px);
 }
 
 /* Waves and ripples are motion and nothing else: with animations off they simply don't happen. */
