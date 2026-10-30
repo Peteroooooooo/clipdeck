@@ -25,7 +25,10 @@ export const CONCEAL_MS = 130
 // over the native glass (which keeps animating on its own) and then jumped in.
 const CONCEALED: Keyframe = { opacity: 0, transform: `scale(${CONCEAL_SCALE})` }
 const SHOWN: Keyframe = { opacity: 1, transform: 'none' }
-const STAGGERED_CARDS = 8
+const CARD_DELAY_MS = 30
+const CARD_STEP_MS = 22
+// However tall the panel is stretched, the last on-screen card starts no later than the 8th did.
+const CARD_SPREAD_MS = 7 * CARD_STEP_MS
 
 function motionAllowed() {
   return !(
@@ -74,12 +77,13 @@ export function installPanelSleep() {
 
     running.push(panel.animate([from, SHOWN], { duration: REVEAL_MS, easing: SPRING_SMOOTH_EASING }))
     if (from.opacity === 0) {
-      panel.querySelectorAll<HTMLElement>('.panel-card').forEach((card, index) => {
-        if (index >= STAGGERED_CARDS) return
+      const cards = visibleCards(panel)
+      const step = cards.length > 1 ? Math.min(CARD_STEP_MS, CARD_SPREAD_MS / (cards.length - 1)) : 0
+      cards.forEach((card, index) => {
         running.push(
           card.animate([{ opacity: 0, translate: '0 8px' }, { opacity: 1, translate: '0 0' }], {
             duration: 300,
-            delay: 30 + index * 22,
+            delay: CARD_DELAY_MS + index * step,
             easing: SPRING_SMOOTH_EASING,
             fill: 'backwards',
           }),
@@ -127,6 +131,17 @@ export function installPanelSleep() {
     window.removeEventListener('clipdeck:reveal', handleReveal)
     window.removeEventListener('clipdeck:conceal', handleConceal)
   }
+}
+
+/** The cards inside the list's visible area, top to bottom (the panel can be stretched to any height). */
+function visibleCards(panel: HTMLElement) {
+  const cards = Array.from(panel.querySelectorAll<HTMLElement>('.panel-card'))
+  const view = panel.querySelector<HTMLElement>('.panel-scroll')?.getBoundingClientRect()
+  if (!view) return cards.slice(0, 8)
+  return cards.filter((card) => {
+    const box = card.getBoundingClientRect()
+    return box.bottom > view.top && box.top < view.bottom
+  })
 }
 
 /** The panel's look right now, including any running animation. */
