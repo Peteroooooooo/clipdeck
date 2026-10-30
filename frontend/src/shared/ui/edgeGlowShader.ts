@@ -186,7 +186,7 @@ function compile(gl: WebGL2RenderingContext, type: number, source: string) {
 }
 
 /** Null where WebGL2 is unavailable (then there is simply no glow). */
-export function createEdgeGlowRenderer(canvas: HTMLCanvasElement): EdgeGlowRenderer | null {
+export function createEdgeGlowRenderer(canvas: OffscreenCanvas): EdgeGlowRenderer | null {
   let gl: WebGL2RenderingContext | null = null
   try {
     gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false, depth: false, stencil: false })

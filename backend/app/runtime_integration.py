@@ -8,11 +8,6 @@ except ImportError:  # pragma: no cover - non-Windows guard
     winreg = None
 
 
-class NoopStartupManager:
-    def set_enabled(self, enabled: bool, command: str) -> None:
-        return None
-
-
 class WindowsStartupManager:
     RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 

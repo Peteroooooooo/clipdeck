@@ -4,8 +4,8 @@ import threading
 import time
 
 from backend.app.single_instance import ERROR_ALREADY_EXISTS
+from backend.app.single_instance import INFINITE
 from backend.app.single_instance import WAIT_OBJECT_0
-from backend.app.single_instance import WAIT_TIMEOUT
 from backend.app.single_instance import WindowsSingleInstanceManager
 
 
@@ -48,9 +48,9 @@ class FakeKernel32:
         kind, target = self._handles[handle]
         assert kind == "event"
 
-        if target.wait(timeout_ms / 1000):
-            return WAIT_OBJECT_0
-        return WAIT_TIMEOUT
+        assert timeout_ms == INFINITE
+        target.wait()
+        return WAIT_OBJECT_0
 
     def SetEvent(self, handle: int) -> int:
         kind, target = self._handles[handle]
@@ -79,8 +79,8 @@ class FakeKernel32:
 
 def test_windows_single_instance_manager_detects_existing_primary_instance() -> None:
     kernel32 = FakeKernel32()
-    first_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True, wait_timeout_ms=10)
-    second_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True, wait_timeout_ms=10)
+    first_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True)
+    second_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True)
 
     assert first_manager.acquire_primary() is True
     assert second_manager.acquire_primary() is False
@@ -91,7 +91,7 @@ def test_windows_single_instance_manager_detects_existing_primary_instance() -> 
 
 def test_windows_single_instance_manager_signals_activation_callback() -> None:
     kernel32 = FakeKernel32()
-    manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True, wait_timeout_ms=10)
+    manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True)
     activations = {"count": 0}
 
     assert manager.acquire_primary() is True
@@ -109,8 +109,8 @@ def test_windows_single_instance_manager_signals_activation_callback() -> None:
 
 def test_secondary_manager_stop_does_not_trigger_activation() -> None:
     kernel32 = FakeKernel32()
-    primary_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True, wait_timeout_ms=10)
-    secondary_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True, wait_timeout_ms=10)
+    primary_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True)
+    secondary_manager = WindowsSingleInstanceManager(kernel32=kernel32, is_windows=True)
     activations = {"count": 0}
 
     assert primary_manager.acquire_primary() is True

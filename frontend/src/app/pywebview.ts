@@ -1,4 +1,5 @@
 import { DEFAULT_APPEARANCE, normalizeAppearance } from './appearance'
+import { stringsFor } from './i18n'
 import type {
   AppearanceSettings,
   AppSnapshot,
@@ -37,9 +38,11 @@ type WindowApi = {
 
 type SnapshotListener = (snapshot: AppSnapshot) => void
 
-let deletedRecord: HistoryRecord | null = null
+// What the toast's undo brings back: the clip just deleted, or the recent clips just cleared.
+let deletedRecords: HistoryRecord[] = []
 
 const defaultSettings: SettingsState = {
+  language: typeof navigator !== 'undefined' && navigator.language.startsWith('zh') ? 'zh' : 'en',
   launchOnStartup: true,
   closeToTray: true,
   followSystemTheme: true,
@@ -64,6 +67,7 @@ function normalizeSettings(settings: Partial<SettingsState>): SettingsState {
   return {
     ...structuredClone(defaultSettings),
     ...settings,
+    language: settings.language === 'zh' ? 'zh' : settings.language === 'en' ? 'en' : defaultSettings.language,
     historyLimit: normalizeHistoryLimit(settings.historyLimit),
     shortcuts: {
       ...structuredClone(defaultSettings.shortcuts),
@@ -88,16 +92,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'text',
       summary: 'Build review notes for the quick panel and tray wiring.',
       detail: 'Build review notes for the quick panel and tray wiring.',
-      meta: 'Text · 126 chars',
       sourceApp: 'Microsoft OneNote',
       sourceGlyph: 'ON',
       sourceIcon: './demo-icons/onenote.png',
       pinned: true,
       createdAt: '2026-03-11T10:14:00',
       updatedAt: '2026-03-11T10:14:00',
-      contentHash: 'hash-text-1',
-      plainText: 'Build review notes for the quick panel and tray wiring.',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -108,16 +108,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'image',
       summary: 'Screenshot capture with 1440 × 900 preview ready to paste.',
       detail: 'Screenshot capture with 1440 × 900 preview ready to paste.',
-      meta: 'Image · 1440 × 900',
       sourceApp: 'PixPin',
       sourceGlyph: 'PP',
       sourceIcon: './demo-icons/pixpin.png',
       pinned: true,
       createdAt: '2026-03-11T10:03:00',
       updatedAt: '2026-03-11T10:03:00',
-      contentHash: 'hash-image-1',
-      plainText: null,
-      richText: null,
       imagePath: 'https://picsum.photos/seed/cipher1/64/64',
       imageWidth: 1440,
       imageHeight: 900,
@@ -128,16 +124,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'rich_text',
       summary: 'Meeting summary with bullet formatting for the V1 launch checklist.',
       detail: 'Meeting summary with bullet formatting for the V1 launch checklist.',
-      meta: 'Rich text · 2.1 KB',
       sourceApp: 'Microsoft Edge',
       sourceGlyph: 'ED',
       sourceIcon: './demo-icons/edge.png',
       pinned: false,
       createdAt: '2026-03-11T09:51:00',
       updatedAt: '2026-03-11T09:51:00',
-      contentHash: 'hash-rich-1',
-      plainText: 'Meeting summary with bullet formatting for the V1 launch checklist.',
-      richText: '<ul><li>Meeting summary with bullet formatting for the V1 launch checklist.</li></ul>',
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -148,16 +140,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'file',
       summary: 'wireframe.png and 3 more files from the design handoff folder.',
       detail: 'wireframe.png and 3 more files from the design handoff folder.',
-      meta: 'Files · 4 items',
       sourceApp: 'File Explorer',
       sourceGlyph: 'FE',
       sourceIcon: './demo-icons/explorer.png',
       pinned: false,
       createdAt: '2026-03-11T09:32:00',
       updatedAt: '2026-03-11T09:32:00',
-      contentHash: 'hash-file-1',
-      plainText: 'wireframe.png and 3 more files from the design handoff folder.',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -173,16 +161,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'text',
       summary: 'npm run test:run',
       detail: 'npm run test:run',
-      meta: 'Text · command',
       sourceApp: 'Visual Studio Code',
       sourceGlyph: 'VS',
       sourceIcon: './demo-icons/vscode.png',
       pinned: false,
       createdAt: '2026-03-11T09:12:00',
       updatedAt: '2026-03-11T09:12:00',
-      contentHash: 'hash-text-2',
-      plainText: 'npm run test:run',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -193,16 +177,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'text',
       summary: 'ssh deploy@staging-box',
       detail: 'ssh deploy@staging-box',
-      meta: 'Text · command',
       sourceApp: 'Windows Terminal',
       sourceGlyph: 'WT',
       sourceIcon: './demo-icons/terminal.png',
       pinned: false,
       createdAt: '2026-03-11T08:58:00',
       updatedAt: '2026-03-11T08:58:00',
-      contentHash: 'hash-text-3',
-      plainText: 'ssh deploy@staging-box',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -213,16 +193,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'rich_text',
       summary: 'Sprint recap: finish tray wiring, validate pywebview bridge, update README.',
       detail: 'Sprint recap: finish tray wiring, validate pywebview bridge, update README.',
-      meta: 'Rich text · 3.4 KB',
       sourceApp: 'ChatGPT',
       sourceGlyph: 'AI',
       sourceIcon: './demo-icons/chatgpt.png',
       pinned: false,
       createdAt: '2026-03-11T08:43:00',
       updatedAt: '2026-03-11T08:43:00',
-      contentHash: 'hash-rich-2',
-      plainText: 'Sprint recap: finish tray wiring, validate pywebview bridge, update README.',
-      richText: '<p>Sprint recap: finish tray wiring, validate pywebview bridge, update README.</p>',
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -233,16 +209,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'file',
       summary: 'release-notes.docx from mock-handoff',
       detail: 'release-notes.docx from mock-handoff',
-      meta: 'File · DOCX',
       sourceApp: 'File Explorer',
       sourceGlyph: 'FE',
       sourceIcon: './demo-icons/explorer.png',
       pinned: false,
       createdAt: '2026-03-11T08:26:00',
       updatedAt: '2026-03-11T08:26:00',
-      contentHash: 'hash-file-2',
-      plainText: 'release-notes.docx from mock-handoff',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -253,16 +225,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'image',
       summary: 'Component snapshot with 1280 × 720 preview for settings page review.',
       detail: 'Component snapshot with 1280 × 720 preview for settings page review.',
-      meta: 'Image · 1280 × 720',
       sourceApp: 'Google Chrome',
       sourceGlyph: 'GC',
       sourceIcon: './demo-icons/chrome.png',
       pinned: false,
       createdAt: '2026-03-11T08:10:00',
       updatedAt: '2026-03-11T08:10:00',
-      contentHash: 'hash-image-2',
-      plainText: null,
-      richText: null,
       imagePath: 'https://picsum.photos/seed/cipher2/64/64',
       imageWidth: 1280,
       imageHeight: 720,
@@ -273,16 +241,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'text',
       summary: 'docker compose up -d --build',
       detail: 'docker compose up -d --build',
-      meta: 'Text · command',
       sourceApp: 'Docker Desktop',
       sourceGlyph: 'DD',
       sourceIcon: './demo-icons/docker.png',
       pinned: false,
       createdAt: '2026-03-11T07:54:00',
       updatedAt: '2026-03-11T07:54:00',
-      contentHash: 'hash-text-4',
-      plainText: 'docker compose up -d --build',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -293,16 +257,12 @@ function createMockRecords(): HistoryRecord[] {
       type: 'text',
       summary: 'Color token note: use warm paper background with rust accent and slate text.',
       detail: 'Color token note: use warm paper background with rust accent and slate text.',
-      meta: 'Text · 92 chars',
       sourceApp: 'WeChat',
       sourceGlyph: 'WC',
       sourceIcon: './demo-icons/wechat.png',
       pinned: true,
       createdAt: '2026-03-11T07:40:00',
       updatedAt: '2026-03-11T07:40:00',
-      contentHash: 'hash-text-5',
-      plainText: 'Color token note: use warm paper background with rust accent and slate text.',
-      richText: null,
       imagePath: null,
       imageWidth: null,
       imageHeight: null,
@@ -339,11 +299,13 @@ function emitSnapshot(snapshot: AppSnapshot) {
   }
 }
 
-function nextToast(toast: ToastMessage): ToastMessage {
-  return {
-    ...toast,
-    id: `${toast.title}-${Date.now()}`,
-  }
+function nextToast(
+  kind: string,
+  tone: ToastMessage['tone'],
+  params?: ToastMessage['params'],
+  actionKind: ToastMessage['actionKind'] = null,
+): ToastMessage {
+  return { id: `${kind}-${Date.now()}`, kind, params, tone, actionKind }
 }
 
 function allRecords(snapshot: AppSnapshot) {
@@ -383,15 +345,9 @@ function fallbackApi(): WindowApi {
     async toggle_pause() {
       return applyFallbackMutation((draft) => {
         draft.isRecordingPaused = !draft.isRecordingPaused
-        draft.toast = nextToast({
-          id: '',
-          title: draft.isRecordingPaused ? '记录已暂停' : '已恢复记录',
-          message: draft.isRecordingPaused
-            ? '新的剪贴板内容暂时不会进入历史。'
-            : '新的剪贴板内容会继续进入历史。',
-          tone: draft.isRecordingPaused ? 'danger' : 'success',
-          actionKind: null,
-        })
+        draft.toast = draft.isRecordingPaused
+          ? nextToast('recording_paused', 'danger')
+          : nextToast('recording_resumed', 'success')
       })
     },
     async toggle_always_on_top() {
@@ -411,13 +367,7 @@ function fallbackApi(): WindowApi {
         const groups = repartition(allRecords(draft))
         draft.pinnedRecords = groups.pinnedRecords
         draft.recentRecords = groups.recentRecords
-        draft.toast = nextToast({
-          id: '',
-          title: record.pinned ? '已固定记录' : '已取消固定',
-          message: record.summary,
-          tone: 'success',
-          actionKind: null,
-        })
+        draft.toast = nextToast(record.pinned ? 'pinned' : 'unpinned', 'success', { summary: record.summary })
       })
     },
     async delete_record(recordId) {
@@ -427,61 +377,41 @@ function fallbackApi(): WindowApi {
           return
         }
 
-        deletedRecord = structuredClone(record)
+        deletedRecords = [structuredClone(record)]
         draft.pinnedRecords = draft.pinnedRecords.filter((item) => item.id !== recordId)
         draft.recentRecords = draft.recentRecords.filter((item) => item.id !== recordId)
-        draft.toast = nextToast({
-          id: '',
-          title: '记录已删除',
-          message: record.summary,
-          tone: 'danger',
-          actionLabel: '撤销',
-          actionKind: 'undo_delete',
-        })
+        draft.toast = nextToast('deleted', 'danger', { summary: record.summary }, 'undo_delete')
       })
     },
     async undo_delete() {
       return applyFallbackMutation((draft) => {
-        if (!deletedRecord) {
+        if (!deletedRecords.length) {
           return
         }
 
-        const groups = repartition([...allRecords(draft), deletedRecord])
+        const groups = repartition([...allRecords(draft), ...deletedRecords])
         draft.pinnedRecords = groups.pinnedRecords
         draft.recentRecords = groups.recentRecords
-        draft.toast = nextToast({
-          id: '',
-          title: '已恢复删除的记录',
-          message: deletedRecord.summary,
-          tone: 'success',
-          actionKind: null,
-        })
-        deletedRecord = null
+        draft.toast =
+          deletedRecords.length === 1
+            ? nextToast('restored', 'success', { summary: deletedRecords[0].summary })
+            : nextToast('restored_many', 'success', { count: deletedRecords.length })
+        deletedRecords = []
       })
     },
     async clear_all_history() {
       return applyFallbackMutation((draft) => {
         draft.pinnedRecords = []
         draft.recentRecords = []
-        draft.toast = nextToast({
-          id: '',
-          title: '已清空全部历史',
-          message: '固定和最近记录都已移除。',
-          tone: 'danger',
-          actionKind: null,
-        })
+        deletedRecords = []
+        draft.toast = nextToast('cleared_all', 'danger')
       })
     },
     async clear_unpinned_history() {
       return applyFallbackMutation((draft) => {
+        deletedRecords = draft.recentRecords
         draft.recentRecords = []
-        draft.toast = nextToast({
-          id: '',
-          title: '已清除未固定记录',
-          message: '仅保留固定记录。',
-          tone: 'danger',
-          actionKind: null,
-        })
+        draft.toast = nextToast('cleared_unpinned', 'danger', { count: deletedRecords.length }, 'undo_delete')
       })
     },
     async copy_record(recordId) {
@@ -499,59 +429,24 @@ function fallbackApi(): WindowApi {
           return
         }
 
-        draft.toast = nextToast({
-          id: '',
-          title: '图片已保存',
-          message: `${draft.settings.imageSavePath}\\ClipDeck ${record.createdAt.slice(0, 19).replace('T', ' ').replace(/:/g, '-')}.png`,
-          tone: 'success',
-          actionKind: null,
+        draft.toast = nextToast('image_saved', 'success', {
+          path: `${draft.settings.imageSavePath}\\ClipDeck ${record.createdAt.slice(0, 19).replace('T', ' ').replace(/:/g, '-')}.png`,
         })
       })
     },
-    async trigger_primary_action(recordId) {
-      return applyFallbackMutation((draft) => {
-        const record = findRecord(draft, recordId)
-        if (!record) {
-          return
-        }
-
-        draft.toast = nextToast({
-          id: '',
-          title: '已复制到剪贴板',
-          message: record.summary,
-          tone: 'success',
-          actionKind: null,
-        })
-      })
+    // The desktop app pastes and hides; the browser demo has nowhere to paste into.
+    async trigger_primary_action() {
+      return cloneSnapshot(fallbackSnapshot)
     },
-    async paste_plain_text(recordId) {
-      return applyFallbackMutation((draft) => {
-        const record = findRecord(draft, recordId)
-        if (!record) {
-          return
-        }
-
-        draft.toast = nextToast({
-          id: '',
-          title: '已纯文本粘贴',
-          message: record.summary,
-          tone: 'success',
-          actionKind: null,
-        })
-      })
+    async paste_plain_text() {
+      return cloneSnapshot(fallbackSnapshot)
     },
     async save_settings(settings, pauseRecording) {
       return applyFallbackMutation((draft) => {
         draft.settings = normalizeSettings(settings)
         draft.isRecordingPaused = pauseRecording
         draft.view = 'panel'
-        draft.toast = nextToast({
-          id: '',
-          title: '设置已保存',
-          message: '新的应用配置已经生效。',
-          tone: 'success',
-          actionKind: null,
-        })
+        draft.toast = nextToast('settings_saved', 'success')
       })
     },
     async default_shortcuts() {
@@ -560,6 +455,7 @@ function fallbackApi(): WindowApi {
     async dismiss_toast() {
       return applyFallbackMutation((draft) => {
         draft.toast = null
+        deletedRecords = []
       })
     },
     async hide_window() {
@@ -570,7 +466,7 @@ function fallbackApi(): WindowApi {
       return `${basePath}\\selected-data`
     },
     async confirm_clear_all_history() {
-      return window.confirm('Clear all clipboard history? Pinned and recent clips will be removed.')
+      return window.confirm(stringsFor(fallbackSnapshot.settings.language).settings.confirmClearAll)
     },
     async preview_appearance() {
       return Promise.resolve()
@@ -673,7 +569,7 @@ export function subscribeSnapshot(listener: SnapshotListener) {
 }
 
 export function resetDesktopApiMock() {
-  deletedRecord = null
+  deletedRecords = []
   fallbackSnapshot = createSnapshot()
   listeners.clear()
 }

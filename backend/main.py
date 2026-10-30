@@ -30,17 +30,14 @@ import webview
 from backend.app.bridge import AppBridge
 from backend.app.clipboard import ClipboardMonitor
 from backend.app.clipboard import WindowsClipboardReader
-from backend.app.hotkeys import NoopGlobalHotkeyManager
 from backend.app.hotkeys import WindowsGlobalHotkeyManager
 from backend.app.runtime import resolve_startup_command
 from backend.app.runtime import resolve_webview_data_path
 from backend.app.runtime import resolve_window_icon
 from backend.app.runtime import use_own_taskbar_identity
 from backend.app.runtime import START_HIDDEN_FLAG
-from backend.app.runtime_integration import NoopStartupManager
 from backend.app.runtime_integration import RuntimeIntegrationController
 from backend.app.runtime_integration import WindowsStartupManager
-from backend.app.single_instance import NoopSingleInstanceManager
 from backend.app.single_instance import WindowsSingleInstanceManager
 from backend.app.state import AppState
 from backend.app.tray import TrayController
@@ -58,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
     if os.getenv("CLIPBOARD_TEST_MODE") == "1":
         return
 
-    single_instance_manager = create_single_instance_manager()
+    single_instance_manager = WindowsSingleInstanceManager()
     if not single_instance_manager.acquire_primary():
         if not start_hidden:
             single_instance_manager.signal_primary()
@@ -98,16 +95,24 @@ def main(argv: list[str] | None = None) -> None:
         window_controller.show()
 
     single_instance_manager.start_activation_listener(show_without_paste_target)
-    bridge._bind_confirm_clear_all_history(lambda: window_controller.run_modal(confirm_clear_all_history))
-    startup_manager = WindowsStartupManager() if os.name == "nt" else NoopStartupManager()
-    hotkey_manager = WindowsGlobalHotkeyManager() if os.name == "nt" else NoopGlobalHotkeyManager()
+    bridge._bind_confirm_clear_all_history(
+        lambda: window_controller.run_modal(lambda: confirm_clear_all_history(state.settings.language))
+    )
+    # Set once the tray exists; a shortcut refused at launch is reported when it is up.
+    tray_holder: dict[str, TrayController] = {}
+
+    def hotkey_failed(shortcut: str) -> None:
+        state.report_hotkey_failed(shortcut)
+        if "tray" in tray_holder:
+            tray_holder["tray"].notify_hotkey_failed(shortcut)
+
     runtime_integration = RuntimeIntegrationController(
-        startup_manager=startup_manager,
-        hotkey_manager=hotkey_manager,
+        startup_manager=WindowsStartupManager(),
+        hotkey_manager=WindowsGlobalHotkeyManager(on_register_failed=hotkey_failed),
         startup_command=resolve_startup_command(project_root=project_root),
         toggle_window=lambda: _toggle_window_from_shortcut(state=state, window_controller=window_controller),
     )
-    state.subscribe(lambda _snapshot: window_controller.dispatch_snapshot(bridge.get_app_state()))
+    state.subscribe(lambda snapshot: window_controller.dispatch_snapshot(bridge.with_window_state(snapshot)))
     saved_appearance = {"value": state.settings.appearance.to_dict()}
 
     def follow_saved_appearance(_snapshot) -> None:
@@ -118,8 +123,6 @@ def main(argv: list[str] | None = None) -> None:
             window_controller.apply_appearance(current)
 
     state.subscribe(follow_saved_appearance)
-    state.subscribe(runtime_integration.sync)
-    runtime_integration.sync(state.snapshot())
 
     tray = TrayController(
         state=state,
@@ -141,6 +144,9 @@ def main(argv: list[str] | None = None) -> None:
         single_instance_manager=single_instance_manager,
     )
     tray.run()
+    tray_holder["tray"] = tray
+    state.subscribe(runtime_integration.sync)
+    runtime_integration.sync(state.snapshot())
     monitor.start()
 
     webview.start(debug=debug_mode, storage_path=str(resolve_webview_data_path()))
@@ -152,7 +158,7 @@ def _shutdown(
     window_controller: AppWindowController,
     monitor: ClipboardMonitor | None,
     runtime_integration: RuntimeIntegrationController | None,
-    single_instance_manager: NoopSingleInstanceManager | WindowsSingleInstanceManager | None,
+    single_instance_manager: WindowsSingleInstanceManager | None,
 ) -> None:
     if tray is not None:
         tray.stop()
@@ -171,12 +177,6 @@ def _toggle_window_from_shortcut(*, state: AppState, window_controller: AppWindo
     else:
         state.clear_paste_target()
     window_controller.toggle_visibility()
-
-
-def create_single_instance_manager() -> NoopSingleInstanceManager | WindowsSingleInstanceManager:
-    if os.name == "nt":
-        return WindowsSingleInstanceManager()
-    return NoopSingleInstanceManager()
 
 
 if __name__ == "__main__":

@@ -86,7 +86,7 @@ def test_main_signals_existing_instance_and_skips_bootstrap(monkeypatch) -> None
     manager = DummySingleInstanceManager(primary=False)
 
     monkeypatch.delenv("CLIPBOARD_TEST_MODE", raising=False)
-    monkeypatch.setattr(backend_main, "create_single_instance_manager", lambda: manager, raising=False)
+    monkeypatch.setattr(backend_main, "WindowsSingleInstanceManager", lambda: manager)
 
     def fail_app_state():
         raise AssertionError("AppState should not be created for a secondary launch")
@@ -106,7 +106,7 @@ def test_main_hidden_secondary_launch_exits_without_signaling(monkeypatch) -> No
     manager = DummySingleInstanceManager(primary=False)
 
     monkeypatch.delenv("CLIPBOARD_TEST_MODE", raising=False)
-    monkeypatch.setattr(backend_main, "create_single_instance_manager", lambda: manager, raising=False)
+    monkeypatch.setattr(backend_main, "WindowsSingleInstanceManager", lambda: manager)
 
     def fail_app_state():
         raise AssertionError("AppState should not be created for a secondary launch")

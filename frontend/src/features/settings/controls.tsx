@@ -1,5 +1,6 @@
 import { useId, type CSSProperties } from 'react'
 import { motion } from 'motion/react'
+import { useT } from '../../app/i18n'
 import { SPRING_SNAPPY } from '../../shared/ui/motionTokens'
 
 export function Toggle({ checked, label, onClick }: { checked: boolean; label: string; onClick: () => void }) {
@@ -100,12 +101,13 @@ export function PresetRow<T>({
   disabled?: boolean
   onPick: (values: T) => void
 }) {
+  const t = useT()
   const active = presets.find((preset) => preset.id === activeId)
   return (
     <div className="field-row choice-row preset-row">
       <div className="field-label">
         <strong>{label}</strong>
-        <span>{active ? active.description : 'Custom: your own values, edited below'}</span>
+        <span>{active ? active.description : t.appearance.customHint}</span>
       </div>
       <div aria-label={label} className="choice-group" role="radiogroup">
         {presets.map((preset) => (
@@ -123,7 +125,7 @@ export function PresetRow<T>({
         ))}
         {active ? null : (
           <span aria-checked="true" className="choice is-selected is-custom" role="radio">
-            Custom
+            {t.appearance.custom}
           </span>
         )}
       </div>

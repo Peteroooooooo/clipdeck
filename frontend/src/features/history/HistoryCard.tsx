@@ -1,11 +1,11 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion, PresenceContext } from 'motion/react'
 import { Copy, DownloadSimple, File, Image, PushPin, TextAa, TextAlignLeft, TrashSimple } from '@phosphor-icons/react'
+import { recordTitle, sourceName, useT } from '../../app/i18n'
 import type { HistoryRecord } from '../../app/types'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
 import { useLensGroup } from '../../shared/ui/liquid/useLiquidLens'
 import { SPRING_SMOOTH, SPRING_SNAPPY } from '../../shared/ui/motionTokens'
-import { timeAgo } from '../../shared/utils/timeAgo'
 import { capsuleRef, trackCapsule } from './capsuleHole'
 
 // Under half of SPRING_SNAPPY's visual duration (0.3 s): the spring covers most of the way early,
@@ -34,7 +34,7 @@ const TYPE_ICONS = {
   file: File,
 } as const
 
-function SourceAvatar({ record }: { record: HistoryRecord }) {
+function SourceAvatar({ record, source }: { record: HistoryRecord; source: string }) {
   const [iconError, setIconError] = useState(false)
   const glyph = record.sourceGlyph || record.sourceApp.slice(0, 2).toUpperCase()
   const TypeIcon = TYPE_ICONS[record.type] ?? TextAlignLeft
@@ -47,7 +47,7 @@ function SourceAvatar({ record }: { record: HistoryRecord }) {
   // The app's own icon, as the backend read it from its exe; the lettered bead is the fallback.
   if (record.sourceIcon && !iconError) {
     return (
-      <span className="record-avatar is-app" aria-hidden="true" title={record.sourceApp}>
+      <span className="record-avatar is-app" aria-hidden="true" title={source}>
         <img alt="" className="record-app-icon" draggable={false} onError={() => setIconError(true)} src={record.sourceIcon} />
         {badge}
       </span>
@@ -55,20 +55,20 @@ function SourceAvatar({ record }: { record: HistoryRecord }) {
   }
 
   return (
-    <span className={`record-avatar is-${record.type}`} aria-hidden="true" title={record.sourceApp}>
+    <span className={`record-avatar is-${record.type}`} aria-hidden="true" title={source}>
       <span className="record-avatar-glyph">{glyph}</span>
       {badge}
     </span>
   )
 }
 
-function PreviewAvatar({ record }: { record: HistoryRecord }) {
+function PreviewAvatar({ record, source, title }: { record: HistoryRecord; source: string; title: string }) {
   const [imgError, setImgError] = useState(false)
 
   if (record.type === 'image' && record.imagePath && !imgError) {
     return (
       <img
-        alt={record.summary}
+        alt={title}
         className="record-preview-image"
         height={38}
         src={record.imagePath}
@@ -78,7 +78,7 @@ function PreviewAvatar({ record }: { record: HistoryRecord }) {
     )
   }
 
-  return <SourceAvatar record={record} />
+  return <SourceAvatar record={record} source={source} />
 }
 
 // The highlight's soft light follows the pointer; written straight to CSS vars so hovering never
@@ -94,6 +94,8 @@ function trackSpotlight(event: React.MouseEvent<HTMLElement>) {
 
 interface HistoryCardProps {
   record: HistoryRecord
+  /** "3m ago", worked out by the list when it is shown, so only rows whose label changed re-render. */
+  timeLabel: string
   isActive: boolean
   isPinned: boolean
   onActivate: (recordId: string) => void
@@ -109,6 +111,7 @@ interface HistoryCardProps {
 // entered, not every row.
 export const HistoryCard = memo(function HistoryCard({
   record,
+  timeLabel,
   isActive,
   isPinned,
   onActivate,
@@ -119,6 +122,9 @@ export const HistoryCard = memo(function HistoryCard({
   onPrimaryAction,
   onSaveImage,
 }: HistoryCardProps) {
+  const t = useT()
+  const title = recordTitle(record, t)
+  const source = sourceName(record, t)
   const { groupRef: actionsRef, lensRef } = useLensGroup<HTMLDivElement>()
   const cardRef = useRef<HTMLElement | null>(null)
 
@@ -160,6 +166,9 @@ export const HistoryCard = memo(function HistoryCard({
       onMouseEnter={() => onActivate(record.id)}
       onMouseMove={trackSpotlight}
       ref={cardRef}
+      // whileTap would make the row a Tab stop of its own (with the browser's focus outline);
+      // its main button is the stop.
+      tabIndex={-1}
       transition={SPRING_SMOOTH}
       whileTap={{ scale: 0.985 }}
     >
@@ -169,7 +178,7 @@ export const HistoryCard = memo(function HistoryCard({
       </span>
 
       <button
-        aria-label={`${record.summary} from ${record.sourceApp}`}
+        aria-label={t.card.from(title, source)}
         className="panel-card-main"
         onClick={() => {
           onActivate(record.id)
@@ -177,14 +186,14 @@ export const HistoryCard = memo(function HistoryCard({
         }}
         type="button"
       >
-        <PreviewAvatar record={record} />
+        <PreviewAvatar record={record} source={source} title={title} />
 
         <span className="record-copy">
-          <span className="record-summary">{record.summary}</span>
+          <span className="record-summary">{title}</span>
           <span className="record-meta">
-            <span>{record.sourceApp}</span>
+            <span>{source}</span>
             <span className="meta-dot">·</span>
-            <span className="record-time">{timeAgo(record.updatedAt)}</span>
+            <span className="record-time">{timeLabel}</span>
           </span>
         </span>
       </button>
@@ -219,47 +228,54 @@ export const HistoryCard = memo(function HistoryCard({
         </PresenceContext.Provider>
         {record.type === 'image' && onSaveImage && (
           <button
-            aria-label="Save image"
+            aria-label={t.card.saveImage}
             className="action-button"
             data-lens=""
             onClick={() => onSaveImage(record.id)}
-            title="保存到本地"
+            title={t.card.saveImage}
             type="button"
           >
             <DownloadSimple size={15} />
           </button>
         )}
-        <button aria-label="Copy" className="action-button" data-lens="" onClick={() => onCopy(record.id)} title="Copy" type="button">
+        <button
+          aria-label={t.card.copy}
+          className="action-button"
+          data-lens=""
+          onClick={() => onCopy(record.id)}
+          title={t.card.copy}
+          type="button"
+        >
           <Copy size={15} />
         </button>
         {record.type === 'rich_text' && onPlainTextPaste && (
           <button
-            aria-label="Paste as plain text"
+            aria-label={t.card.pastePlain}
             className="action-button"
             data-lens=""
             onClick={() => onPlainTextPaste(record.id)}
-            title="纯文本粘贴"
+            title={t.card.pastePlain}
             type="button"
           >
             <TextAa size={15} />
           </button>
         )}
         <button
-          aria-label={record.pinned ? 'Unpin' : 'Pin'}
+          aria-label={record.pinned ? t.card.unpin : t.card.pin}
           className={`action-button is-pin ${record.pinned ? 'is-pinned' : ''}`}
           data-lens=""
           onClick={() => onPinToggle(record.id)}
-          title={record.pinned ? 'Unpin' : 'Pin'}
+          title={record.pinned ? t.card.unpin : t.card.pin}
           type="button"
         >
           <PushPin size={15} weight={record.pinned ? 'fill' : 'regular'} />
         </button>
         <button
-          aria-label="Delete"
+          aria-label={t.card.delete}
           className="action-button is-danger"
           data-lens=""
           onClick={() => onDelete(record.id)}
-          title="Delete"
+          title={t.card.delete}
           type="button"
         >
           <TrashSimple size={15} />

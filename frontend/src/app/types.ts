@@ -1,5 +1,7 @@
 export type AppView = 'panel' | 'settings'
 
+export type Language = 'zh' | 'en'
+
 export type HistoryRecordType = 'text' | 'rich_text' | 'image' | 'file'
 
 export interface HistoryRecord {
@@ -7,15 +9,11 @@ export interface HistoryRecord {
   type: HistoryRecordType
   summary: string
   detail: string
-  meta: string
   sourceApp: string
   sourceGlyph: string
   pinned: boolean
   createdAt: string
   updatedAt: string
-  contentHash: string
-  plainText: string | null
-  richText: string | null
   imagePath: string | null
   imageWidth: number | null
   imageHeight: number | null
@@ -79,6 +77,7 @@ export interface AppearanceSettings {
 }
 
 export interface SettingsState {
+  language: Language
   launchOnStartup: boolean
   closeToTray: boolean
   followSystemTheme: boolean
@@ -98,12 +97,12 @@ export type ToastTone = 'neutral' | 'success' | 'danger'
 
 export type ToastActionKind = 'undo_delete' | null
 
+/** The backend says what happened; the page words it in the app's language (i18n.ts). */
 export interface ToastMessage {
   id: string
-  message: string
+  kind: string
+  params?: { summary?: string; path?: string; folder?: string; shortcut?: string; count?: number }
   tone: ToastTone
-  title: string
-  actionLabel?: string
   actionKind: ToastActionKind
 }
 

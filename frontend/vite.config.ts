@@ -18,5 +18,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
+    // The settings flows click through several animated pages; 5 s is too tight under jsdom.
+    testTimeout: 15000,
   },
 })

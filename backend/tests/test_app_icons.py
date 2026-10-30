@@ -57,7 +57,7 @@ def test_new_clip_gives_its_name_and_icon_to_older_clips_of_the_same_app(tmp_pat
         captured_at="2026-10-22T10:00:00",
     )
 
-    by_text = {record["plainText"]: record for record in snapshot["recentRecords"]}
+    by_text = {record["summary"]: record for record in snapshot["recentRecords"]}
     assert by_text["new clip"]["sourceIcon"] == "file:///icons/code.png"
     assert by_text["old clip"]["sourceApp"] == "Visual Studio Code"
     assert by_text["old clip"]["sourceIcon"] == "file:///icons/code.png"

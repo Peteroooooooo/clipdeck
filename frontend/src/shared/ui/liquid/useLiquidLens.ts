@@ -100,6 +100,12 @@ export function useLensGroup<G extends HTMLElement = HTMLElement>() {
     const st = { x: spring(), vis: spring(), press: spring() }
 
     const render = () => {
+      // Faded out it is taken out of drawing altogether: every row has one, and a lens that is
+      // only invisible (visibility: hidden) still adds its backdrop filter's render passes to
+      // every frame the window draws (measured: 16 passes a frame with them, 8 without).
+      const hidden = st.vis.x < 0.01
+      lens.style.display = hidden ? 'none' : ''
+      if (hidden) return
       const stretch = Math.min(Math.abs(st.x.v) / 900, 0.55) * ELASTIC
       const appear = 0.55 + 0.45 * clamp01(st.vis.x)
       const sx = (1 + stretch + st.press.x * 0.16) * appear
@@ -107,9 +113,6 @@ export function useLensGroup<G extends HTMLElement = HTMLElement>() {
       const half = lens.offsetWidth / 2
       lens.style.transform = `translateX(${(st.x.x - half).toFixed(2)}px) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`
       lens.style.setProperty('--vis', clamp01(st.vis.x).toFixed(3))
-      // Faded out it is taken out of drawing altogether: every row has one, and an invisible
-      // lens still runs its backdrop filter on every frame the window draws.
-      lens.style.visibility = st.vis.x < 0.01 ? 'hidden' : ''
     }
 
     const loop = createLoop((dt) => {

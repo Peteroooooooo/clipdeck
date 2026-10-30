@@ -64,7 +64,7 @@
   --text-1: rgba(0, 0, 0, 0.86);
   --text-2: rgba(0, 0, 0, calc((0.86 + var(--text-secondary-alpha)) / 2));
   --text-3: rgba(0, 0, 0, var(--text-secondary-alpha));
-  --focus-ring: rgba(0, 122, 255, 0.5);
+  --focus-ring: rgba(0, 122, 255, 0.7);
 
   /* Solid elements: primary button, selected icon button. */
   --solid: rgba(0, 0, 0, 0.82);
@@ -105,7 +105,8 @@
 
   --font-sans: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont,
     'Microsoft YaHei UI', 'PingFang SC', system-ui, sans-serif;
-  --font-display: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', -apple-system, system-ui, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', -apple-system, 'Microsoft YaHei UI',
+    'PingFang SC', system-ui, sans-serif;
   --font-mono: 'Cascadia Code', 'SF Mono', Consolas, ui-monospace, monospace;
 
   /* visionOS springs (no overshoot), expressed as CSS linear() easing. */
@@ -172,7 +173,7 @@
   --text-1: #fff;
   --text-2: rgba(255, 255, 255, calc((1 + var(--text-secondary-alpha)) / 2));
   --text-3: rgba(255, 255, 255, var(--text-secondary-alpha));
-  --focus-ring: rgba(255, 255, 255, 0.32);
+  --focus-ring: rgba(255, 255, 255, 0.7);
 
   --solid: rgba(255, 255, 255, 0.92);
   --solid-hover: #fff;
@@ -288,8 +289,7 @@ input:focus-visible {
 /* Rim light: paints a corner-lit gradient and masks it down to a 1px ring that follows
    border-radius. Controls keep a fixed rim; the window's follows its Rim Light setting. */
 .glass-window::after,
-.toast::before,
-.icon-glass::before {
+.toast::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -458,51 +458,6 @@ html:not(.is-desktop) .glass-window {
 }
 
 /* ═══════════ SHARED CONTROLS ═══════════ */
-
-/* Round glass icon button (visionOS "secondary"): invisible until hovered. */
-.icon-glass {
-  position: relative;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--text-2);
-  display: grid;
-  place-items: center;
-  transition:
-    background var(--hover),
-    color var(--hover),
-    transform var(--press);
-}
-
-.icon-glass::before {
-  opacity: 0;
-  transition: opacity var(--hover);
-}
-
-.icon-glass:hover {
-  background: var(--glass-2);
-  color: var(--text-1);
-}
-
-.icon-glass:hover::before {
-  opacity: 0.6;
-}
-
-.icon-glass:active {
-  transform: scale(0.92);
-}
-
-/* Selected state is solid white with a dark glyph, as in visionOS. */
-.icon-glass.is-selected {
-  background: var(--solid);
-  color: var(--on-solid);
-}
-
-.icon-glass.is-selected::before {
-  opacity: 0;
-}
 
 /* ═══════════ LIQUID GLASS ═══════════ */
 
@@ -934,7 +889,7 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   border-radius: 50%;
   background: #30d158;
   box-shadow: 0 0 6px rgba(48, 209, 88, 0.75);
-  animation: rec-blink 1.6s ease-in-out infinite;
+  /* Blinks while recording: recBlink.ts sets its opacity ten times a second. */
   transition:
     background 300ms ease,
     box-shadow 300ms ease,
@@ -945,57 +900,6 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   background: #ff453a;
   box-shadow: 0 0 8px rgba(255, 69, 58, 0.8);
   transform: scale(1.4);
-  animation: none;
-}
-
-/* The same ease in and out between 1 and 0.25, taken in 16 steps (10 a second) instead of every
-   frame: each frame the window draws costs a full composite of all its glass, and an 8px dot
-   fading at 60 frames a second kept the GPU at half a core. */
-@keyframes rec-blink {
-  0%,
-  100% {
-    opacity: 1;
-    animation-timing-function: steps(1, end);
-  }
-  6.25%,
-  93.75% {
-    opacity: 0.971;
-    animation-timing-function: steps(1, end);
-  }
-  12.5%,
-  87.5% {
-    opacity: 0.89;
-    animation-timing-function: steps(1, end);
-  }
-  18.75%,
-  81.25% {
-    opacity: 0.769;
-    animation-timing-function: steps(1, end);
-  }
-  25%,
-  75% {
-    opacity: 0.625;
-    animation-timing-function: steps(1, end);
-  }
-  31.25%,
-  68.75% {
-    opacity: 0.481;
-    animation-timing-function: steps(1, end);
-  }
-  37.5%,
-  62.5% {
-    opacity: 0.36;
-    animation-timing-function: steps(1, end);
-  }
-  43.75%,
-  56.25% {
-    opacity: 0.279;
-    animation-timing-function: steps(1, end);
-  }
-  50% {
-    opacity: 0.25;
-    animation-timing-function: steps(1, end);
-  }
 }
 
 /* The search bar drips out of the magnifier (QuickPanelView animates it from there); this row
@@ -1398,9 +1302,12 @@ html.glass-live .liquid.is-raised > .liquid-warp {
 
 /* It runs only on a lit row (the active one, and the one fading out: data-lit), at a steady pace.
    Every row's lap is set to the same clock (HistoryCard), so moving to another row the meteor
-   carries on from where it was instead of starting a new lap. */
+   carries on from where it was instead of starting a new lap. On a fast screen the lap is taken
+   in steps, one every other frame (frameRate.ts sets --meteor-timing: 432 steps at 240 Hz): each
+   frame the window draws costs a full composite of its glass, and at every frame a lit row kept
+   the renderer at 30% and the GPU at 50% of a core. */
 .panel-card[data-lit] .panel-card-edge::before {
-  animation: row-meteor 3.6s linear infinite;
+  animation: row-meteor 3.6s var(--meteor-timing, linear) infinite;
 }
 
 @keyframes row-meteor {
@@ -1836,6 +1743,57 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-3);
+}
+
+/* The list of categories: one grouped list of rows that open a page (visionOS Settings). */
+.settings-nav {
+  margin-top: 12px;
+}
+
+.settings-nav-row {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  justify-content: flex-start;
+  transition: background var(--hover);
+}
+
+.settings-nav-row:hover {
+  background: var(--glass-1);
+}
+
+.settings-nav-row:active {
+  background: var(--glass-2);
+}
+
+.settings-nav-row .field-label {
+  flex: 1;
+}
+
+.settings-nav-icon {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--glass-2);
+  box-shadow: var(--ring-thin);
+  color: var(--text-1);
+  display: grid;
+  place-items: center;
+}
+
+.settings-nav-caret {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* A page's first group sits as close under the header as the category list does. */
+.settings-scroll > .settings-grid:first-child,
+.settings-scroll > .shortcut-grid:first-child {
+  margin-top: 12px;
 }
 
 /* Grouped list (visionOS ListGroup): faint glass with a single top highlight. */
@@ -2381,7 +2339,6 @@ html.no-motion .liquid-preview-track {
   padding: 10px 14px 14px;
 }
 
-html.no-motion .rec-dot,
 html.no-motion .panel-card[data-lit] .panel-card-edge::before {
   animation: none;
 }
@@ -2416,7 +2373,6 @@ html.no-motion *::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rec-dot,
   .liquid-preview-track,
   .panel-card[data-lit] .panel-card-edge::before {
     animation: none;

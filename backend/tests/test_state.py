@@ -225,9 +225,9 @@ def test_save_image_copies_the_png_into_the_image_save_folder_without_overwritin
     second_file = tmp_path / "saved" / "ClipDeck 2026-10-28 15-30-12 (2).png"
     assert first_file.read_bytes() == b"png-bytes"
     assert second_file.read_bytes() == b"png-bytes"
-    assert first["toast"]["title"] == "图片已保存"
-    assert first["toast"]["message"] == str(first_file)
-    assert second["toast"]["message"] == str(second_file)
+    assert first["toast"]["kind"] == "image_saved"
+    assert first["toast"]["params"] == {"path": str(first_file)}
+    assert second["toast"]["params"] == {"path": str(second_file)}
 
 
 def test_save_image_reports_a_missing_image_file(tmp_path: Path) -> None:
@@ -245,6 +245,7 @@ def test_save_image_reports_a_missing_image_file(tmp_path: Path) -> None:
     snapshot = state.save_image(record["id"])
 
     assert snapshot["toast"]["tone"] == "danger"
+    assert snapshot["toast"]["kind"] == "image_missing"
     assert not (tmp_path / "saved").exists() or not any((tmp_path / "saved").iterdir())
 
 
@@ -279,7 +280,8 @@ def test_clear_all_history_removes_pinned_and_recent_records(tmp_path: Path) -> 
 
     assert cleared["pinnedRecords"] == []
     assert cleared["recentRecords"] == []
-    assert cleared["toast"]["title"] == "已清空全部历史"
+    assert cleared["toast"]["kind"] == "cleared_all"
+    assert cleared["toast"]["actionKind"] is None
 
 
 def test_clear_unpinned_history_keeps_pinned_records(tmp_path: Path) -> None:
@@ -300,7 +302,77 @@ def test_clear_unpinned_history_keeps_pinned_records(tmp_path: Path) -> None:
 
     assert [record["summary"] for record in cleared["pinnedRecords"]] == ["keep pinned"]
     assert cleared["recentRecords"] == []
-    assert cleared["toast"]["title"] == "已清除未固定记录"
+    assert cleared["toast"]["kind"] == "cleared_unpinned"
+    assert cleared["toast"]["params"] == {"count": 1}
+    assert cleared["toast"]["actionKind"] == "undo_delete"
+
+
+def test_clearing_recent_clips_can_be_undone_with_their_images(tmp_path: Path) -> None:
+    state = build_state(tmp_path)
+    state.ingest_capture(ClipboardCapture(text="first", source_app="Word"), captured_at="2026-03-11T10:18:00")
+    state.ingest_capture(
+        ClipboardCapture(image_bytes=b"png-bytes", image_width=4, image_height=4, source_app="Snipping Tool"),
+        captured_at="2026-03-11T10:19:00",
+    )
+
+    state.clear_unpinned_history()
+    restored = state.undo_delete()
+
+    assert sorted(record["type"] for record in restored["recentRecords"]) == ["image", "text"]
+    image = next(record for record in restored["recentRecords"] if record["type"] == "image")
+    assert image_uri_to_path(image["imagePath"]).read_bytes() == b"png-bytes"
+    assert restored["toast"]["kind"] == "restored_many"
+    assert restored["toast"]["params"] == {"count": 2}
+
+
+def test_a_busy_clipboard_is_reported_and_nothing_is_pasted(tmp_path: Path) -> None:
+    clipboard = DummyClipboardService()
+    clipboard.write_record = lambda record, *, as_plain_text: False
+    state = AppState(storage=AppStorage(base_path=tmp_path / "data"), clipboard_service=clipboard)
+    created = state.ingest_capture(ClipboardCapture(text="hello", source_app="Word"), captured_at="2026-03-11T10:18:00")
+    clipboard.capture_paste_target()
+
+    snapshot = state.trigger_primary_action(created["recentRecords"][0]["id"])
+
+    assert snapshot["toast"]["kind"] == "clipboard_busy"
+    assert clipboard.paste_shortcuts == 0
+
+
+def test_the_page_gets_clips_without_their_rich_text(tmp_path: Path) -> None:
+    state = build_state(tmp_path)
+    snapshot = state.ingest_capture(
+        ClipboardCapture(text="hello", rich_text="<b>hello</b>", source_app="Word"),
+        captured_at="2026-03-11T10:18:00",
+    )
+
+    record = snapshot["recentRecords"][0]
+    assert {"richText", "plainText", "contentHash", "meta"}.isdisjoint(record)
+    assert state.records[0].rich_text == "<b>hello</b>"
+
+
+def test_text_over_the_size_limit_is_not_recorded(tmp_path: Path) -> None:
+    from backend.app.clipboard import MAX_TEXT_CHARS
+
+    state = build_state(tmp_path)
+    snapshot = state.ingest_capture(
+        ClipboardCapture(text="x" * (MAX_TEXT_CHARS + 1), source_app="Word"),
+        captured_at="2026-03-11T10:18:00",
+    )
+
+    assert snapshot["recentRecords"] == []
+
+
+def test_language_is_saved_and_unknown_values_fall_back(tmp_path: Path) -> None:
+    state = build_state(tmp_path)
+    settings = state.settings.to_dict()
+    settings["language"] = "en"
+    state.save_settings(settings, pause_recording=False)
+
+    assert build_state(tmp_path).settings.language == "en"
+
+    settings["language"] = "fr"
+    state.save_settings(settings, pause_recording=False)
+    assert state.settings.language in ("zh", "en")
 
 
 def test_switching_storage_path_merges_existing_target_history_and_migrates_images(tmp_path: Path) -> None:
@@ -371,7 +443,7 @@ def test_unreachable_storage_path_falls_back_to_default_folder(tmp_path: Path) -
     state = AppState(storage=AppStorage(base_path=tmp_path / "data"))
 
     assert state.storage.base_path == tmp_path / "data"
-    assert state.toast is not None and state.toast.title == "存储位置不可用"
+    assert state.toast is not None and state.toast.kind == "storage_unavailable"
 
 
 def test_two_copies_in_the_same_second_keep_their_order_and_limit(tmp_path: Path) -> None:

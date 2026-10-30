@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .clipboard import ClipboardCapture
 from .models import AppearanceSettings
 from .state import AppState
 
@@ -75,87 +74,54 @@ class AppBridge:
     def set_view(self, view: str) -> dict[str, object]:
         if view != "panel":
             self._state.clear_paste_target()
-        self._state.set_view(view)
-        return self._snapshot()
+        return self.with_window_state(self._state.set_view(view))
 
     def toggle_pause(self) -> dict[str, object]:
-        self._state.toggle_pause()
-        return self._snapshot()
+        return self.with_window_state(self._state.toggle_pause())
 
     def toggle_pin(self, record_id: str) -> dict[str, object]:
-        self._state.toggle_pin(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.toggle_pin(record_id))
 
     def delete_record(self, record_id: str) -> dict[str, object]:
-        self._state.delete_record(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.delete_record(record_id))
 
     def undo_delete(self) -> dict[str, object]:
-        self._state.undo_delete()
-        return self._snapshot()
+        return self.with_window_state(self._state.undo_delete())
 
     def clear_all_history(self) -> dict[str, object]:
-        self._state.clear_all_history()
-        return self._snapshot()
+        return self.with_window_state(self._state.clear_all_history())
 
     def clear_unpinned_history(self) -> dict[str, object]:
-        self._state.clear_unpinned_history()
-        return self._snapshot()
+        return self.with_window_state(self._state.clear_unpinned_history())
 
     def trigger_primary_action(self, record_id: str) -> dict[str, object]:
         if self._should_hide_window_for_action():
             self._hide_window()
-        self._state.trigger_primary_action(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.trigger_primary_action(record_id))
 
     def paste_plain_text(self, record_id: str) -> dict[str, object]:
         if self._should_hide_window_for_action() and self._state.has_paste_target():
             self._hide_window()
-        self._state.paste_plain_text(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.paste_plain_text(record_id))
 
     def copy_record(self, record_id: str) -> dict[str, object]:
         if self._should_hide_window_for_action():
             self.hide_window()
-        self._state.copy_record(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.copy_record(record_id))
 
     def save_image(self, record_id: str) -> dict[str, object]:
         """Saves an image clip into the image save folder; the window stays open."""
-        self._state.save_image(record_id)
-        return self._snapshot()
+        return self.with_window_state(self._state.save_image(record_id))
 
     def save_settings(self, settings: dict[str, object], pause_recording: bool) -> dict[str, object]:
-        self._state.save_settings(settings, pause_recording)
-        return self._snapshot()
+        return self.with_window_state(self._state.save_settings(settings, pause_recording))
 
     def default_shortcuts(self) -> dict[str, str]:
         """Factory shortcuts for the settings draft; nothing changes until the user saves."""
         return self._state.default_shortcuts()
 
     def dismiss_toast(self) -> dict[str, object]:
-        self._state.dismiss_toast()
-        return self._snapshot()
-
-    def ingest_clipboard_capture(
-        self,
-        payload: dict[str, object],
-        captured_at: str | None = None,
-    ) -> dict[str, object]:
-        self._state.ingest_capture(
-            ClipboardCapture(
-                text=_optional_string(payload.get("text")),
-                rich_text=_optional_string(payload.get("richText")),
-                image_bytes=_optional_bytes(payload.get("imageBytes")),
-                image_width=_optional_int(payload.get("imageWidth")),
-                image_height=_optional_int(payload.get("imageHeight")),
-                file_paths=[str(item) for item in payload.get("filePaths", [])],
-                source_app=_optional_string(payload.get("sourceApp")),
-                source_glyph=_optional_string(payload.get("sourceGlyph")),
-            ),
-            captured_at=captured_at,
-        )
-        return self._snapshot()
+        return self.with_window_state(self._state.dismiss_toast())
 
     def toggle_always_on_top(self) -> dict[str, object]:
         if self._toggle_always_on_top is not None:
@@ -186,9 +152,11 @@ class AppBridge:
         return self._confirm_clear_all_history()
 
     def _snapshot(self) -> dict[str, object]:
-        snapshot = self._state.snapshot()
-        snapshot["isAlwaysOnTop"] = False if self._is_always_on_top is None else self._is_always_on_top()
-        return snapshot
+        return self.with_window_state(self._state.snapshot())
+
+    def with_window_state(self, snapshot: dict[str, object]) -> dict[str, object]:
+        """A state snapshot plus what only the window knows (always on top)."""
+        return {**snapshot, "isAlwaysOnTop": False if self._is_always_on_top is None else self._is_always_on_top()}
 
     def _should_hide_window_for_action(self) -> bool:
         if self._hide_window is None:
@@ -197,22 +165,3 @@ class AppBridge:
             return True
         return not self._is_always_on_top()
 
-
-def _optional_bytes(value: object) -> bytes | None:
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        return value
-    return str(value).encode("utf-8")
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    return int(value)
-
-
-def _optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(value)

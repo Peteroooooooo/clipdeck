@@ -38,7 +38,22 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Pillow parts the app never uses (AVIF alone is ~7.8 MB): it only reads and writes PNG, BMP,
+    # JPEG and DIB clipboard images, and draws no text. Checked by running those paths with these
+    # modules blocked.
+    excludes=[
+        "PIL._avif",
+        "PIL.AvifImagePlugin",
+        "PIL._imagingft",
+        "PIL.ImageFont",
+        "PIL._imagingcms",
+        "PIL.ImageCms",
+        "PIL._imagingtk",
+        "PIL.ImageTk",
+        "tkinter",
+        "setuptools",
+        "pkg_resources",
+    ],
     noarchive=False,
     optimize=0,
 )

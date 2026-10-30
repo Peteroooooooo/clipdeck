@@ -52,13 +52,11 @@ def test_bridge_does_not_expose_internal_state_as_public_js_api_attribute(tmp_pa
 def test_bridge_methods_proxy_real_record_updates(tmp_path: Path) -> None:
     bridge = build_bridge(tmp_path)
 
-    created = bridge.ingest_clipboard_capture(
-        {
-            "text": "bridge text",
-            "sourceApp": "VS Code",
-        },
-        "2026-03-11T11:00:00",
+    bridge._state.ingest_capture(
+        ClipboardCapture(text="bridge text", source_app="VS Code"),
+        captured_at="2026-03-11T11:00:00",
     )
+    created = bridge.get_app_state()
     record_id = created["recentRecords"][0]["id"]
     settings_snapshot = bridge.set_view("settings")
     updated_snapshot = bridge.toggle_pin(record_id)
