@@ -46,16 +46,15 @@ def test_tray_controller_uses_localized_title_and_brand_icon() -> None:
 
     assert tray.icon.title == TRAY_TITLE
 
-    # The ClipDeck icon (small-size cut): a night tile with transparent corners, a black board in an
-    # aurora frame filling most of it, and a white-grey key block across the board's top.
+    # The ClipDeck icon (small-size cut): no background tile, just a solid aurora board outline with a
+    # see-through middle, a key block across its top and content lines below.
     image = tray._create_icon()
     assert image.size == (64, 64)
-    assert image.getpixel((0, 0))[3] == 0
-    red, green, blue, alpha = image.getpixel((32, 21))
-    assert alpha == 255 and min(red, green, blue) > 190
-    assert max(image.getpixel((32, 27))[:3]) < 60
-    edge = image.getpixel((5, 32))
-    assert edge[3] == 255 and max(edge[:3]) < 60
+    assert image.getpixel((0, 0))[3] == 0  # outside the board: transparent
+    assert image.getpixel((5, 32))[3] == 0
+    assert image.getpixel((12, 32))[3] == 255  # the frame
+    assert image.getpixel((32, 20))[3] == 255  # the key block
+    assert image.getpixel((19, 40))[3] == 0  # inside the board: hollow
 
 
 def test_dark_menus_never_raise() -> None:
