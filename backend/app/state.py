@@ -181,6 +181,11 @@ class AppState:
         if callable(capture_target):
             capture_target()
 
+    def note_foreground_window(self, hwnd: int) -> None:
+        note_window = getattr(self.clipboard_service, "note_foreground_window", None)
+        if callable(note_window):
+            note_window(hwnd)
+
     def has_paste_target(self) -> bool:
         has_target = getattr(self.clipboard_service, "has_paste_target", None)
         if callable(has_target):
@@ -347,9 +352,14 @@ class AppState:
             return self._notify(snapshot)
         if paste and self.has_paste_target():
             restore_target = getattr(self.clipboard_service, "restore_paste_target", None)
-            if callable(restore_target):
-                restore_target()
-            self.clipboard_service.send_paste_shortcut()
+            if not callable(restore_target) or restore_target():
+                self.clipboard_service.send_paste_shortcut()
+            else:
+                # The window would not come back to the front; Ctrl+V now would land elsewhere.
+                with self._lock:
+                    self.toast = self._make_toast("paste_failed", "danger")
+                    snapshot = self.snapshot()
+                return self._notify(snapshot)
         return self._notify(self.snapshot())
 
     def _notify(self, snapshot: dict[str, object]) -> dict[str, object]:

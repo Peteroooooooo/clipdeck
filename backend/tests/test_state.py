@@ -189,6 +189,29 @@ def test_primary_action_and_plain_text_paste_restore_hotkey_target(tmp_path: Pat
     assert clipboard_service.paste_shortcuts == 2
 
 
+def test_paste_is_not_sent_when_the_target_window_will_not_come_back(tmp_path: Path) -> None:
+    class StuckTargetService(DummyClipboardService):
+        def restore_paste_target(self) -> bool:
+            self.restored_targets += 1
+            return False
+
+    clipboard_service = StuckTargetService()
+    state = build_state(tmp_path, clipboard_service=clipboard_service)
+    created = state.ingest_capture(
+        ClipboardCapture(text="hello world", source_app="Word"),
+        captured_at="2026-03-11T10:14:00",
+    )
+    record_id = created["recentRecords"][0]["id"]
+
+    state.capture_paste_target()
+    snapshot = state.trigger_primary_action(record_id)
+
+    assert clipboard_service.writes == [(record_id, False)]
+    assert clipboard_service.restored_targets == 1
+    assert clipboard_service.paste_shortcuts == 0
+    assert snapshot["toast"]["kind"] == "paste_failed"
+
+
 def test_copy_record_keeps_copy_only_behavior_without_pasting(tmp_path: Path) -> None:
     clipboard_service = DummyClipboardService()
     state = build_state(tmp_path, clipboard_service=clipboard_service)

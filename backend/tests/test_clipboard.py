@@ -320,64 +320,146 @@ def test_windows_clipboard_reader_configures_pointer_sized_winapi_signatures() -
     assert reader.kernel32.GlobalLock.restype is ctypes.c_void_p
 
 
-def test_restore_paste_target_does_not_restore_non_minimized_window() -> None:
-    calls: list[tuple[str, int, int] | tuple[str, int]] = []
+class FakeWindows:
+    """user32 for the paste-target code: a few top-level windows, each with a class and process."""
 
-    class FakeUser32:
-        def IsWindow(self, hwnd):
-            return True
+    def __init__(self, windows: dict[int, tuple[str, int]], *, foreground: int | None = None, iconic: bool = False):
+        self.windows = windows
+        self.foreground = foreground
+        self.iconic = iconic
+        self.calls: list[tuple] = []
+        # Where SetForegroundWindow really puts the front; None = Windows refuses to switch.
+        self.switch_to: dict[int, int | None] = {}
 
-        def IsIconic(self, hwnd):
-            return False
+    def IsWindow(self, hwnd):
+        return hwnd in self.windows
 
-        def ShowWindow(self, hwnd, command):
-            calls.append(("show", hwnd, command))
-            return True
+    def IsWindowVisible(self, hwnd):
+        return hwnd in self.windows
 
-        def SetForegroundWindow(self, hwnd):
-            calls.append(("foreground", hwnd))
-            return True
+    def IsIconic(self, hwnd):
+        return self.iconic
 
+    def GetAncestor(self, hwnd, flags):
+        return hwnd
+
+    def GetWindowThreadProcessId(self, hwnd, process_id_ref):
+        process_id_ref._obj.value = self.windows.get(hwnd, ("", 0))[1]
+        return 1
+
+    def GetClassNameW(self, hwnd, buffer, size):
+        buffer.value = self.windows.get(hwnd, ("", 0))[0]
+        return len(buffer.value)
+
+    def GetForegroundWindow(self):
+        return self.foreground
+
+    def ShowWindow(self, hwnd, command):
+        self.calls.append(("show", hwnd, command))
+        return True
+
+    def SetForegroundWindow(self, hwnd):
+        self.calls.append(("foreground", hwnd))
+        self.foreground = self.switch_to.get(hwnd, hwnd) or self.foreground
+        return True
+
+
+def service_with(user32: FakeWindows) -> WindowsClipboardService:
     clipboard_service = object.__new__(WindowsClipboardService)
     clipboard_service._is_windows = True
-    clipboard_service.user32 = FakeUser32()
+    clipboard_service.user32 = user32
+    clipboard_service._paste_target_hwnd = None
+    return clipboard_service
+
+
+OTHER_APP = 4242
+
+
+def test_restore_paste_target_does_not_restore_non_minimized_window() -> None:
+    user32 = FakeWindows({99: ("Notepad", OTHER_APP)})
+    clipboard_service = service_with(user32)
     clipboard_service._paste_target_hwnd = 99
-    clipboard_service.SW_RESTORE = 9
 
     restored = clipboard_service.restore_paste_target()
 
     assert restored is True
-    assert calls == [("foreground", 99)]
+    assert user32.calls == [("foreground", 99)]
 
 
 def test_restore_paste_target_restores_minimized_window_before_foregrounding() -> None:
-    calls: list[tuple[str, int, int] | tuple[str, int]] = []
-
-    class FakeUser32:
-        def IsWindow(self, hwnd):
-            return True
-
-        def IsIconic(self, hwnd):
-            return True
-
-        def ShowWindow(self, hwnd, command):
-            calls.append(("show", hwnd, command))
-            return True
-
-        def SetForegroundWindow(self, hwnd):
-            calls.append(("foreground", hwnd))
-            return True
-
-    clipboard_service = object.__new__(WindowsClipboardService)
-    clipboard_service._is_windows = True
-    clipboard_service.user32 = FakeUser32()
+    user32 = FakeWindows({42: ("Notepad", OTHER_APP)}, iconic=True)
+    clipboard_service = service_with(user32)
     clipboard_service._paste_target_hwnd = 42
-    clipboard_service.SW_RESTORE = 9
 
     restored = clipboard_service.restore_paste_target()
 
     assert restored is True
-    assert calls == [("show", 42, 9), ("foreground", 42)]
+    assert user32.calls == [("show", 42, 9), ("foreground", 42)]
+
+
+def test_restore_paste_target_keeps_the_target_for_the_next_clip() -> None:
+    # Kept on top, the panel stays open after a paste: the next click pastes into the same place.
+    clipboard_service = service_with(FakeWindows({99: ("Notepad", OTHER_APP)}))
+    clipboard_service._paste_target_hwnd = 99
+
+    assert clipboard_service.restore_paste_target() is True
+    assert clipboard_service.restore_paste_target() is True
+    assert clipboard_service.has_paste_target() is True
+
+
+def test_restore_paste_target_reports_a_window_that_never_comes_to_the_front(monkeypatch) -> None:
+    monkeypatch.setattr("backend.app.clipboard.FOREGROUND_WAIT_S", 0.05)
+    user32 = FakeWindows({99: ("Notepad", OTHER_APP), 7: ("Chrome_WidgetWin_1", OTHER_APP + 1)}, foreground=7)
+    user32.switch_to[99] = None
+    clipboard_service = service_with(user32)
+    clipboard_service._paste_target_hwnd = 99
+
+    assert clipboard_service.restore_paste_target() is False
+
+
+def test_clicking_into_another_window_makes_it_the_paste_target() -> None:
+    clipboard_service = service_with(FakeWindows({10: ("Notepad", OTHER_APP), 11: ("Chrome_WidgetWin_1", OTHER_APP + 1)}))
+
+    clipboard_service.note_foreground_window(10)
+    clipboard_service.note_foreground_window(11)
+
+    assert clipboard_service._paste_target_hwnd == 11
+
+
+def test_clipdeck_and_shell_windows_never_become_the_paste_target() -> None:
+    import os
+
+    clipboard_service = service_with(
+        FakeWindows(
+            {
+                10: ("Notepad", OTHER_APP),
+                20: ("WindowsForms10.Window.8.app.0.1", os.getpid()),
+                30: ("Shell_TrayWnd", OTHER_APP + 1),
+                31: ("XamlExplorerHostIslandWindow", OTHER_APP + 1),
+            }
+        )
+    )
+    clipboard_service.note_foreground_window(10)
+
+    for hwnd in (20, 30, 31, 404):
+        clipboard_service.note_foreground_window(hwnd)
+
+    assert clipboard_service._paste_target_hwnd == 10
+
+
+def test_shortcut_pressed_from_the_taskbar_leaves_no_paste_target() -> None:
+    user32 = FakeWindows({30: ("Shell_TrayWnd", OTHER_APP)}, foreground=30)
+    clipboard_service = service_with(user32)
+
+    clipboard_service.capture_paste_target()
+
+    assert clipboard_service.has_paste_target() is False
+
+    user32.windows[10] = ("Notepad", OTHER_APP)
+    user32.foreground = 10
+    clipboard_service.capture_paste_target()
+
+    assert clipboard_service._paste_target_hwnd == 10
 
 
 def test_set_image_resolves_file_uri_paths(tmp_path) -> None:
