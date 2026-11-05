@@ -86,6 +86,7 @@
   --switch-off: rgba(120, 120, 128, 0.22);
   --scroll-thumb: rgba(0, 0, 0, 0.16);
   --scroll-thumb-hover: rgba(0, 0, 0, 0.28);
+  --scroll-thumb-active: rgba(0, 0, 0, 0.38);
   --selection: rgba(0, 122, 255, 0.2);
   --recess-shadow: inset 0 1px 1.5px rgba(0, 0, 0, 0.06);
   --focus-border: rgba(0, 122, 255, 0.45);
@@ -194,6 +195,7 @@
   --switch-off: rgba(120, 120, 128, 0.32);
   --scroll-thumb: rgba(255, 255, 255, 0.16);
   --scroll-thumb-hover: rgba(255, 255, 255, 0.28);
+  --scroll-thumb-active: rgba(255, 255, 255, 0.38);
   --selection: rgba(255, 255, 255, 0.24);
   --recess-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
   --focus-border: rgba(255, 255, 255, 0.2);
@@ -278,6 +280,54 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scroll-thumb-hover);
   background-clip: padding-box;
+}
+
+/* The list and settings pages draw their own bar (OverlayScrollbar.tsx): the same thin glass line
+   at rest, wider and brighter once the pointer comes near the edge, easy to grab. The scroller
+   keeps the native bar's 12px gutter (data-scrollable, while the content overflows) for it. */
+.scroll-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.overlay-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  z-index: 2;
+  display: none;
+  pointer-events: none;
+}
+
+.overlay-scrollbar[data-scrollable] {
+  display: block;
+}
+
+.overlay-scrollbar-thumb {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 4px;
+  border-radius: 99px;
+  background: var(--scroll-thumb);
+  will-change: transform;
+  transition:
+    width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 0.22s ease;
+}
+
+.overlay-scrollbar[data-near] .overlay-scrollbar-thumb {
+  width: 8px;
+  background: var(--scroll-thumb-hover);
+}
+
+.overlay-scrollbar[data-dragging] .overlay-scrollbar-thumb {
+  background: var(--scroll-thumb-active);
 }
 
 button:focus-visible,
@@ -1108,8 +1158,13 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 6px 8px 76px 10px;
   scroll-padding-block: 16px 80px;
+}
+
+.panel-scroll[data-scrollable] {
+  padding-right: 20px;
 }
 
 .card-list {
@@ -1731,7 +1786,12 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
   padding: 4px 14px 20px;
+}
+
+.settings-scroll[data-scrollable] {
+  padding-right: 26px;
 }
 
 .settings-section {
