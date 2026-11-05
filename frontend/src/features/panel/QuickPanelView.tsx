@@ -10,6 +10,7 @@ import { playLiquidRipple } from '../../shared/ui/liquidRipple'
 import { useLensDrop, useLensGroup } from '../../shared/ui/liquid/useLiquidLens'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
 import { SPRING_SMOOTH, SPRING_SNAPPY } from '../../shared/ui/motionTokens'
+import { OverlayScrollbar } from '../../shared/ui/OverlayScrollbar'
 import { useRecBlink } from '../../shared/ui/recBlink'
 import { timeAgo } from '../../shared/utils/timeAgo'
 import { HistoryCard } from '../history/HistoryCard'
@@ -200,6 +201,7 @@ export function QuickPanelView({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const magnifierRef = useRef<HTMLButtonElement | null>(null)
   const searchRowRef = useRef<HTMLDivElement | null>(null)
+  const [listScroller, setListScroller] = useState<HTMLDivElement | null>(null)
   const blurTimerRef = useRef(0)
   const [barRef, animateBar] = useAnimate<HTMLDivElement>()
   const shouldScrollActiveIntoViewRef = useRef(false)
@@ -645,49 +647,53 @@ export function QuickPanelView({
       </motion.div>
 
       {/* Leaving the list puts the highlight away; the keyboard brings it back with the arrows. */}
-      <motion.div
-        className="panel-scroll"
-        layoutScroll
-        onPointerLeave={(event) => {
-          if (event.pointerType === 'mouse') setActiveId(null)
-        }}
-      >
-        {allCards.length ? (
-          // Keyed by filter: switching tabs cross-fades the whole list instead of popping rows.
-          <motion.div
-            animate={{ opacity: 1, y: 0 }}
-            className="card-list"
-            initial={{ opacity: 0, y: 6 }}
-            key={filter}
-            transition={SPRING_SMOOTH}
-          >
-            <LayoutGroup id="cards">
-              {visiblePinned.length ? <p className="section-label">{t.panel.pinned}</p> : null}
-              <AnimatePresence initial={false}>{visiblePinned.map(renderCard)}</AnimatePresence>
-              {visibleRecent.length ? (
-                <div className="section-head">
-                  <p className="section-label">{t.panel.recent}</p>
-                  <button className="section-action" onClick={onClearHistory} title={t.panel.clearTitle} type="button">
-                    {t.panel.clear}
-                  </button>
-                </div>
-              ) : null}
-              <AnimatePresence initial={false}>{visibleRecent.map(renderCard)}</AnimatePresence>
-            </LayoutGroup>
-          </motion.div>
-        ) : hasRecords ? (
-          <motion.p animate={{ opacity: 1, y: 0 }} className="no-match" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
-            {t.panel.noMatch}
-          </motion.p>
-        ) : (
-          <motion.div animate={{ opacity: 1, y: 0 }} className="empty-state" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
-            <span className="empty-icon">
-              <AppLogo size={48} />
-            </span>
-            <span>{t.panel.empty}</span>
-          </motion.div>
-        )}
-      </motion.div>
+      <div className="scroll-area">
+        <motion.div
+          className="panel-scroll"
+          layoutScroll
+          onPointerLeave={(event) => {
+            if (event.pointerType === 'mouse') setActiveId(null)
+          }}
+          ref={setListScroller}
+        >
+          {allCards.length ? (
+            // Keyed by filter: switching tabs cross-fades the whole list instead of popping rows.
+            <motion.div
+              animate={{ opacity: 1, y: 0 }}
+              className="card-list"
+              initial={{ opacity: 0, y: 6 }}
+              key={filter}
+              transition={SPRING_SMOOTH}
+            >
+              <LayoutGroup id="cards">
+                {visiblePinned.length ? <p className="section-label">{t.panel.pinned}</p> : null}
+                <AnimatePresence initial={false}>{visiblePinned.map(renderCard)}</AnimatePresence>
+                {visibleRecent.length ? (
+                  <div className="section-head">
+                    <p className="section-label">{t.panel.recent}</p>
+                    <button className="section-action" onClick={onClearHistory} title={t.panel.clearTitle} type="button">
+                      {t.panel.clear}
+                    </button>
+                  </div>
+                ) : null}
+                <AnimatePresence initial={false}>{visibleRecent.map(renderCard)}</AnimatePresence>
+              </LayoutGroup>
+            </motion.div>
+          ) : hasRecords ? (
+            <motion.p animate={{ opacity: 1, y: 0 }} className="no-match" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
+              {t.panel.noMatch}
+            </motion.p>
+          ) : (
+            <motion.div animate={{ opacity: 1, y: 0 }} className="empty-state" initial={{ opacity: 0, y: 6 }} transition={SPRING_SMOOTH}>
+              <span className="empty-icon">
+                <AppLogo size={48} />
+              </span>
+              <span>{t.panel.empty}</span>
+            </motion.div>
+          )}
+        </motion.div>
+        <OverlayScrollbar scroller={listScroller} />
+      </div>
 
       <EdgeGlow active={searchOpen && searchFocused} />
     </section>

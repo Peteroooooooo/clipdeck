@@ -20,6 +20,7 @@ import { DEFAULT_APPEARANCE } from '../../app/appearance'
 import { useT } from '../../app/i18n'
 import type { AppearanceSettings, Language, SettingsState, ShortcutBindings } from '../../app/types'
 import { SPRING_SMOOTH } from '../../shared/ui/motionTokens'
+import { OverlayScrollbar } from '../../shared/ui/OverlayScrollbar'
 import { GlassSections, LiquidSections, type GlassInfo } from './AppearanceSections'
 import { ChoiceRow, ToggleRow } from './controls'
 
@@ -139,6 +140,8 @@ export function SettingsView({
   const [page, setPage] = useState<Category | null>(null)
   // Pages come in from the right, the list comes back from the left.
   const [forward, setForward] = useState(true)
+  // The current page's scrolling box (each page mounts a new one), for its scrollbar.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null)
 
   const openPage = (next: Category | null) => {
     setForward(next !== null)
@@ -369,32 +372,36 @@ export function SettingsView({
       </header>
 
       {/* Keyed by page: each page starts at the top and slides in from the side it comes from. */}
-      <motion.div
-        animate={{ opacity: 1, x: 0 }}
-        className="settings-scroll"
-        initial={{ opacity: 0, x: forward ? 18 : -18 }}
-        key={page ?? 'home'}
-        transition={SPRING_SMOOTH}
-      >
-        {page ? (
-          renderPage(page)
-        ) : (
-          <nav aria-label={t.settings.title} className="settings-grid settings-nav">
-            {CATEGORIES.map(({ key, icon: CategoryIcon }) => (
-              <button className="field-row settings-nav-row" key={key} onClick={() => openPage(key)} type="button">
-                <span aria-hidden="true" className="settings-nav-icon">
-                  <CategoryIcon size={16} weight="bold" />
-                </span>
-                <span className="field-label">
-                  <strong>{t.settings.categories[key][0]}</strong>
-                  <span>{t.settings.categories[key][1]}</span>
-                </span>
-                <CaretRight aria-hidden="true" className="settings-nav-caret" size={14} weight="bold" />
-              </button>
-            ))}
-          </nav>
-        )}
-      </motion.div>
+      <div className="scroll-area">
+        <motion.div
+          animate={{ opacity: 1, x: 0 }}
+          className="settings-scroll"
+          initial={{ opacity: 0, x: forward ? 18 : -18 }}
+          key={page ?? 'home'}
+          ref={setScroller}
+          transition={SPRING_SMOOTH}
+        >
+          {page ? (
+            renderPage(page)
+          ) : (
+            <nav aria-label={t.settings.title} className="settings-grid settings-nav">
+              {CATEGORIES.map(({ key, icon: CategoryIcon }) => (
+                <button className="field-row settings-nav-row" key={key} onClick={() => openPage(key)} type="button">
+                  <span aria-hidden="true" className="settings-nav-icon">
+                    <CategoryIcon size={16} weight="bold" />
+                  </span>
+                  <span className="field-label">
+                    <strong>{t.settings.categories[key][0]}</strong>
+                    <span>{t.settings.categories[key][1]}</span>
+                  </span>
+                  <CaretRight aria-hidden="true" className="settings-nav-caret" size={14} weight="bold" />
+                </button>
+              ))}
+            </nav>
+          )}
+        </motion.div>
+        <OverlayScrollbar scroller={scroller} />
+      </div>
 
       <footer className="settings-footer">
         <button className="ghost-button" onClick={onCancel} type="button">
