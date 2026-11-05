@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import io
+import os
 import re
 import threading
 import time
@@ -422,6 +423,26 @@ def _trim_summary(value: str, limit: int = 120) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
+# Windows of the shell that are in front only for a moment and take no paste: the taskbar and its
+# tray (clicked to open ClipDeck from its icon), Alt+Tab / Task View, and the Start, search and
+# notification flyouts.
+SHELL_WINDOW_CLASSES = frozenset(
+    {
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "NotifyIconOverflowWindow",
+        "TopLevelWindowForOverflowXamlIsland",
+        "XamlExplorerHostIslandWindow",
+        "MultitaskingViewFrame",
+        "ForegroundStaging",
+        "Windows.UI.Core.CoreWindow",
+    }
+)
+# How long a paste waits for the target window to come to the front before giving up on Ctrl+V.
+FOREGROUND_WAIT_S = 0.5
+FOREGROUND_POLL_S = 0.01
+
+
 class WindowsClipboardService:
     CF_UNICODETEXT = 13
     CF_HDROP = 15
@@ -429,6 +450,7 @@ class WindowsClipboardService:
     GMEM_MOVEABLE = 0x0002
     KEYEVENTF_KEYUP = 0x0002
     SW_RESTORE = 9
+    GA_ROOTOWNER = 3
     VK_SHIFT = 0x10
     VK_CONTROL = 0x11
     VK_V = 0x56
@@ -451,7 +473,14 @@ class WindowsClipboardService:
     def capture_paste_target(self) -> None:
         if not self._is_windows:
             return
-        self._paste_target_hwnd = self.user32.GetForegroundWindow()
+        hwnd = self.user32.GetForegroundWindow()
+        self._paste_target_hwnd = hwnd if self._can_paste_into(hwnd) else None
+
+    def note_foreground_window(self, hwnd: int) -> None:
+        """Another window came to the front while the panel is open: the user clicked into it, so
+        that is where the next clip goes."""
+        if self._is_windows and self._can_paste_into(hwnd):
+            self._paste_target_hwnd = hwnd
 
     def has_paste_target(self) -> bool:
         if not self._is_windows or self._paste_target_hwnd is None:
@@ -462,16 +491,47 @@ class WindowsClipboardService:
         self._paste_target_hwnd = None
 
     def restore_paste_target(self) -> bool:
+        """Bring the paste target to the front; True once it is there and can take Ctrl+V.
+
+        The target is kept: with the panel kept on top, the next clip goes to the same place."""
         if not self.has_paste_target():
             self._paste_target_hwnd = None
             return False
 
         hwnd = self._paste_target_hwnd
-        self._paste_target_hwnd = None
         if self.user32.IsIconic(hwnd):
             self.user32.ShowWindow(hwnd, self.SW_RESTORE)
         self.user32.SetForegroundWindow(hwnd)
-        return True
+        return self._wait_until_in_front(hwnd)
+
+    def _wait_until_in_front(self, hwnd) -> bool:
+        # Ctrl+V goes to whichever window is in front: sent before the target got there, or when
+        # Windows refused to bring it, it would paste into some other window.
+        deadline = time.monotonic() + FOREGROUND_WAIT_S
+        target_root = self._root_owner(hwnd)
+        while True:
+            foreground = self.user32.GetForegroundWindow()
+            # Its own dialog in front of it (an app with a modal window open) takes the paste too.
+            if foreground and (foreground == hwnd or self._root_owner(foreground) == target_root):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(FOREGROUND_POLL_S)
+
+    def _root_owner(self, hwnd):
+        return self.user32.GetAncestor(hwnd, self.GA_ROOTOWNER) or hwnd
+
+    def _can_paste_into(self, hwnd) -> bool:
+        if not hwnd or not self.user32.IsWindow(hwnd) or not self.user32.IsWindowVisible(hwnd):
+            return False
+        # ClipDeck's own windows (the panel, its dialogs, WebView2 popups owned by the panel).
+        process_id = wintypes.DWORD()
+        self.user32.GetWindowThreadProcessId(self._root_owner(hwnd), ctypes.byref(process_id))
+        if process_id.value in (0, os.getpid()):
+            return False
+        class_name = ctypes.create_unicode_buffer(256)
+        self.user32.GetClassNameW(hwnd, class_name, len(class_name))
+        return class_name.value not in SHELL_WINDOW_CLASSES
 
     def write_record(self, record: HistoryRecord, *, as_plain_text: bool) -> bool:
         """False when the clipboard could not be opened (another app holds it)."""
@@ -659,6 +719,14 @@ def _configure_window_activation_api(user32) -> None:
     user32.GetForegroundWindow.restype = wintypes.HWND
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetClassNameW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
     user32.IsIconic.argtypes = [wintypes.HWND]
     user32.IsIconic.restype = wintypes.BOOL
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]

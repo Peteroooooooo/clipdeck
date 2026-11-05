@@ -66,6 +66,7 @@ const en = {
     storage_unwritable: ['Storage folder unavailable', (path: string) => `${path} cannot be written; other settings were saved.`],
     settings_saved: ['Settings saved', 'Your changes are in effect.'],
     clipboard_busy: ['Clipboard busy', 'Another app is using the clipboard. Try again.'],
+    paste_failed: ['Copied, not pasted', 'Could not switch back to that window. Click into it and press Ctrl+V.'],
     hotkey_failed: ['Shortcut unavailable', (shortcut: string) => `${shortcut} is taken by another app. Choose another one in Settings.`],
   },
   settings: {
@@ -240,6 +241,7 @@ const zh: Strings = {
     storage_unwritable: ['存储位置不可用', (path) => `${path} 无法写入，其余设置已保存。`],
     settings_saved: ['设置已保存', '新的设置已经生效。'],
     clipboard_busy: ['剪贴板被占用', '另一个程序正在使用剪贴板，请再试一次。'],
+    paste_failed: ['已复制，未能粘贴', '没能切回那个窗口，请点进去按 Ctrl+V。'],
     hotkey_failed: ['快捷键不可用', (shortcut) => `${shortcut} 已被其他程序占用，请在设置里换一个。`],
   },
   settings: {

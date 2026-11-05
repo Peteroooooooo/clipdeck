@@ -30,6 +30,7 @@ import webview
 from backend.app.bridge import AppBridge
 from backend.app.clipboard import ClipboardMonitor
 from backend.app.clipboard import WindowsClipboardReader
+from backend.app.foreground import WindowsForegroundWatcher
 from backend.app.hotkeys import WindowsGlobalHotkeyManager
 from backend.app.runtime import resolve_startup_command
 from backend.app.runtime import resolve_webview_data_path
@@ -95,6 +96,14 @@ def main(argv: list[str] | None = None) -> None:
         window_controller.show()
 
     single_instance_manager.start_activation_listener(show_without_paste_target)
+
+    def follow_foreground(hwnd: int) -> None:
+        # With the panel on screen (kept on top, say), clicking into another window picks where
+        # the next clip is pasted. While it is hidden only the shortcut picks it.
+        if not window_controller.is_hidden:
+            state.note_foreground_window(hwnd)
+
+    foreground_watcher = WindowsForegroundWatcher(on_foreground=follow_foreground)
     bridge._bind_confirm_clear_all_history(
         lambda: window_controller.run_modal(lambda: confirm_clear_all_history(state.settings.language))
     )
@@ -134,6 +143,7 @@ def main(argv: list[str] | None = None) -> None:
             monitor=monitor,
             runtime_integration=runtime_integration,
             single_instance_manager=single_instance_manager,
+            foreground_watcher=foreground_watcher,
         ),
     )
     tray.exit_app = lambda: _shutdown(
@@ -142,12 +152,14 @@ def main(argv: list[str] | None = None) -> None:
         monitor=monitor,
         runtime_integration=runtime_integration,
         single_instance_manager=single_instance_manager,
+        foreground_watcher=foreground_watcher,
     )
     tray.run()
     tray_holder["tray"] = tray
     state.subscribe(runtime_integration.sync)
     runtime_integration.sync(state.snapshot())
     monitor.start()
+    foreground_watcher.start()
 
     webview.start(debug=debug_mode, storage_path=str(resolve_webview_data_path()))
 
@@ -159,11 +171,14 @@ def _shutdown(
     monitor: ClipboardMonitor | None,
     runtime_integration: RuntimeIntegrationController | None,
     single_instance_manager: WindowsSingleInstanceManager | None,
+    foreground_watcher: WindowsForegroundWatcher | None = None,
 ) -> None:
     if tray is not None:
         tray.stop()
     if monitor is not None:
         monitor.stop()
+    if foreground_watcher is not None:
+        foreground_watcher.stop()
     if runtime_integration is not None:
         runtime_integration.stop()
     if single_instance_manager is not None:
