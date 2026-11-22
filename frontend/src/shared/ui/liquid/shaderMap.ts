@@ -2,6 +2,10 @@
 // (https://github.com/rdev/liquid-glass-react, MIT, Copyright 2025 Max Rovensky), which adapted
 // it from https://github.com/shuding/liquid-glass.
 
+import { createPixelCanvas } from '../pixelCanvas'
+
+const MAX_MAP_SIDE = 480
+
 function smoothStep(a: number, b: number, t: number) {
   const x = Math.max(0, Math.min(1, (t - a) / (b - a)))
   return x * x * (3 - 2 * x)
@@ -10,10 +14,9 @@ function smoothStep(a: number, b: number, t: number) {
 function roundedRectSdf(x: number, y: number, width: number, height: number, radius: number) {
   const qx = Math.abs(x) - width + radius
   const qy = Math.abs(y) - height + radius
-  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius
+  if (qx <= 0 && qy <= 0) return Math.max(qx, qy) - radius
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius
 }
-
-import { createPixelCanvas } from '../pixelCanvas'
 
 /** Lens that pulls the backdrop towards the centre near the rounded edges. */
 function liquidLens(u: number, v: number) {
@@ -26,8 +29,12 @@ function liquidLens(u: number, v: number) {
 }
 
 export function createShaderMap(width: number, height: number): string | null {
-  const w = Math.max(1, Math.round(width))
-  const h = Math.max(1, Math.round(height))
+  if (width < 1 || height < 1) {
+    return null
+  }
+  const scale = Math.min(1, MAX_MAP_SIDE / Math.max(width, height))
+  const w = Math.max(1, Math.round(width * scale))
+  const h = Math.max(1, Math.round(height * scale))
   const { canvas, context } = createPixelCanvas(w, h)
   if (!context) {
     return null

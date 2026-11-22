@@ -21,6 +21,7 @@ const MAX_SCALE = 22
 const MAP_SMOOTHING = 2.5
 
 let mapUrl: string | null = null
+let mapPreBlurred = false
 let nodes: { map: SVGFEImageElement; displace: SVGFEDisplacementMapElement; filter: SVGFilterElement } | null = null
 
 function smoothStep(edge0: number, edge1: number, x: number) {
@@ -62,7 +63,38 @@ function createMap() {
     }
   }
   context.putImageData(image, 0, 0)
+
+  const { canvas: blurred, context: ctx2 } = createPixelCanvas(MAP_SIZE, MAP_SIZE)
+  if (ctx2 && 'filter' in ctx2) {
+    const filterValue = `blur(${MAP_SMOOTHING}px)`
+    ctx2.filter = filterValue
+    if (ctx2.filter === filterValue) {
+      ctx2.save()
+      ctx2.filter = 'none'
+      ctx2.fillStyle = 'rgb(128, 128, 128)'
+      ctx2.fillRect(0, 0, MAP_SIZE, MAP_SIZE)
+      ctx2.restore()
+      ctx2.filter = filterValue
+      ctx2.drawImage(canvas, 0, 0)
+      mapPreBlurred = true
+      return blurred.toDataURL()
+    }
+  }
+  mapPreBlurred = false
   return canvas.toDataURL()
+}
+
+function prewarmRippleMap() {
+  if (typeof document === 'undefined' || mapUrl) return
+  mapUrl = createMap()
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(prewarmRippleMap, { timeout: 2000 })
+  } else {
+    window.setTimeout(prewarmRippleMap, 800)
+  }
 }
 
 function ensureFilter() {
@@ -95,16 +127,21 @@ function ensureFilter() {
     node.setAttribute('in', input)
     merge.append(node)
   }
-  const smooth = document.createElementNS(ns, 'feGaussianBlur')
-  smooth.setAttribute('in', 'raw')
-  smooth.setAttribute('stdDeviation', String(MAP_SMOOTHING))
-  smooth.setAttribute('result', 'map')
   const displace = document.createElementNS(ns, 'feDisplacementMap')
   displace.setAttribute('in', 'SourceGraphic')
-  displace.setAttribute('in2', 'map')
   displace.setAttribute('xChannelSelector', 'R')
   displace.setAttribute('yChannelSelector', 'G')
-  filter.append(flood, map, merge, smooth, displace)
+  if (mapPreBlurred) {
+    displace.setAttribute('in2', 'raw')
+    filter.append(flood, map, merge, displace)
+  } else {
+    const smooth = document.createElementNS(ns, 'feGaussianBlur')
+    smooth.setAttribute('in', 'raw')
+    smooth.setAttribute('stdDeviation', String(MAP_SMOOTHING))
+    smooth.setAttribute('result', 'map')
+    displace.setAttribute('in2', 'map')
+    filter.append(flood, map, merge, smooth, displace)
+  }
   svg.append(filter)
   document.body.append(svg)
   nodes = { map, displace, filter }

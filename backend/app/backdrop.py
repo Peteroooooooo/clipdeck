@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import io
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -135,6 +136,14 @@ class GlassBackdrop:
 
         _invoke(self._form, apply)
 
+    def wake(self) -> None:
+        if self._live_dll is None or not hasattr(self._live_dll, "cc_live_backdrop_wake"):
+            return
+        try:
+            self._live_dll.cc_live_backdrop_wake()
+        except Exception:
+            pass
+
 
 def install_glass_backdrop(
     window,
@@ -259,6 +268,9 @@ def _load_live_backdrop():
     if hasattr(dll, "cc_window_drag_begin"):
         dll.cc_window_drag_begin.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int]
         dll.cc_window_drag_begin.restype = ctypes.c_int
+    if hasattr(dll, "cc_live_backdrop_wake"):
+        dll.cc_live_backdrop_wake.argtypes = []
+        dll.cc_live_backdrop_wake.restype = None
     return dll
 
 
@@ -375,10 +387,7 @@ def live_blur_strength(backdrop_blur_dip: float) -> float:
 
 
 def _dpi_scale(hwnd: int) -> float:
-    user32 = ctypes.windll.user32
-    user32.GetDpiForWindow.argtypes = [wintypes.HWND]
-    user32.GetDpiForWindow.restype = wintypes.UINT
-    return (user32.GetDpiForWindow(hwnd) or 96) / 96
+    return (ctypes.windll.user32.GetDpiForWindow(hwnd) or 96) / 96
 
 
 def _invoke(form, action: Callable[[], None]) -> None:
@@ -449,7 +458,6 @@ def capture_desktop_backdrop(window, appearance: dict[str, object] | None = None
         return None
 
     user32 = ctypes.windll.user32
-    user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
     excluded = bool(user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
     try:
         if excluded:
@@ -463,10 +471,12 @@ def capture_desktop_backdrop(window, appearance: dict[str, object] | None = None
             user32.SetWindowDisplayAffinity(hwnd, WDA_NONE)
 
     width, height = shot.size
-    small = shot.convert("RGB").resize(
+    small = shot.resize(
         (max(1, width // BACKDROP_DOWNSCALE), max(1, height // BACKDROP_DOWNSCALE)),
         Image.Resampling.BILINEAR,
     )
+    if small.mode != "RGB":
+        small = small.convert("RGB")
     settings = appearance or {}
     # Blur is chosen in CSS px; convert to pixels of the downscaled image.
     blur_px = float(settings.get("backdropBlur", BACKDROP_DEFAULT_BLUR_DIP)) * _dpi_scale(hwnd) / BACKDROP_DOWNSCALE
@@ -544,15 +554,11 @@ class _DWM_BLURBEHIND(ctypes.Structure):
 
 
 def _set_dwm_attribute(hwnd: int, attribute: int, payload: ctypes._SimpleCData) -> None:
-    dwmapi = ctypes.windll.dwmapi
-    dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
-    dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(payload), ctypes.sizeof(payload))
+    ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(payload), ctypes.sizeof(payload))
 
 
 def _make_transparent(hwnd: int) -> None:
     dwmapi = ctypes.windll.dwmapi
-    dwmapi.DwmExtendFrameIntoClientArea.argtypes = [wintypes.HWND, ctypes.c_void_p]
-    dwmapi.DwmEnableBlurBehindWindow.argtypes = [wintypes.HWND, ctypes.POINTER(_DWM_BLURBEHIND)]
 
     margins = (ctypes.c_int * 4)(-1, -1, -1, -1)
     dwmapi.DwmExtendFrameIntoClientArea(hwnd, margins)
@@ -568,8 +574,6 @@ def _make_transparent(hwnd: int) -> None:
 
 def _monitor_rect_for_window(hwnd: int) -> tuple[int, int, int, int] | None:
     user32 = ctypes.windll.user32
-    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-    user32.MonitorFromWindow.restype = wintypes.HMONITOR
     monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
     info = _MONITORINFO(cbSize=ctypes.sizeof(_MONITORINFO))
     if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
@@ -635,11 +639,29 @@ def _cursor_point() -> tuple[int, int] | None:
 
 def _work_area_for_point(point: tuple[int, int]) -> tuple[int, int, int, int] | None:
     user32 = ctypes.windll.user32
-    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-    user32.MonitorFromPoint.restype = wintypes.HMONITOR
     monitor = user32.MonitorFromPoint(wintypes.POINT(*point), MONITOR_DEFAULTTONEAREST)
     info = _MONITORINFO(cbSize=ctypes.sizeof(_MONITORINFO))
     if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
         return None
     work = info.rcWork
     return work.left, work.top, work.right, work.bottom
+
+
+def _configure_win32_apis() -> None:
+    user32 = ctypes.windll.user32
+    dwmapi = ctypes.windll.dwmapi
+    user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+    user32.GetDpiForWindow.restype = wintypes.UINT
+    user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    user32.MonitorFromPoint.restype = wintypes.HMONITOR
+    dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    dwmapi.DwmExtendFrameIntoClientArea.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    dwmapi.DwmEnableBlurBehindWindow.argtypes = [wintypes.HWND, ctypes.POINTER(_DWM_BLURBEHIND)]
+
+
+if sys.platform == "win32" and wintypes is not None:
+    _configure_win32_apis()

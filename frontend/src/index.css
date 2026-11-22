@@ -470,10 +470,13 @@ html.is-desktop .window-resize-edge[data-edge='bottom'] {
   bottom: calc(var(--shell-pad) - 8px);
 }
 
-html.is-resizing,
-html.is-resizing * {
-  cursor: ns-resize !important;
+html.is-resizing {
+  cursor: ns-resize;
   user-select: none;
+}
+
+html.is-resizing .glass-window {
+  pointer-events: none;
 }
 
 .view-frame {
@@ -946,6 +949,10 @@ html.glass-live .liquid.is-raised > .liquid-warp {
     transform var(--press);
 }
 
+.rec-button:not(.is-paused) .rec-dot {
+  will-change: opacity;
+}
+
 .rec-button.is-paused .rec-dot {
   background: #ff453a;
   box-shadow: 0 0 8px rgba(255, 69, 58, 0.8);
@@ -973,11 +980,15 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  will-change: opacity;
 }
 
 .search-bar.is-shown {
   visibility: visible;
+  will-change: opacity;
+}
+
+.search-bar:not(.is-shown) .liquid-warp {
+  display: none;
 }
 
 .search-bar.is-open {
@@ -1241,6 +1252,7 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   align-items: center;
   border-radius: var(--radius-row);
   isolation: isolate;
+  contain: layout style;
 }
 
 /* Hover / keyboard highlight: a pane of glass that fades in under the active row and out of the
@@ -1301,8 +1313,15 @@ html.glass-live .liquid.is-raised > .liquid-warp {
   height: 360px;
   background: radial-gradient(closest-side, var(--spotlight), transparent 70%);
   transform: translate(calc(var(--mx, 130px) - 180px), calc(var(--my, 32px) - 180px));
-  will-change: transform;
   pointer-events: none;
+}
+
+.panel-card[data-lit] .panel-card-highlight::after {
+  will-change: transform;
+}
+
+.panel-card:not([data-lit]) .panel-card-edge {
+  display: none;
 }
 
 /* The only colour: a hairline edge with a meteor running round it, a bright head and a tail

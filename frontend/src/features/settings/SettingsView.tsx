@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { motion } from 'motion/react'
 import {
   AppWindow,
@@ -166,7 +166,7 @@ export function SettingsView({
   // Snapshots are pushed whenever anything changes (e.g. a new clip arrives), each with a
   // fresh settings object. Only reset the draft when the saved values actually change,
   // otherwise background pushes would wipe what the user is typing.
-  const settingsKey = JSON.stringify(settings)
+  const settingsKey = useMemo(() => JSON.stringify(settings), [settings])
   const [syncedSettingsKey, setSyncedSettingsKey] = useState(settingsKey)
 
   if (settingsKey !== syncedSettingsKey) {

@@ -8,11 +8,26 @@ interface EdgeGlowProps {
   active: boolean
 }
 
+let reducedMotionQuery: MediaQueryList | null | undefined
+let prefersReducedMotion = false
+
+function isReducedMotion() {
+  if (reducedMotionQuery === undefined) {
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+      prefersReducedMotion = reducedMotionQuery.matches
+      reducedMotionQuery.addEventListener?.('change', (event) => {
+        prefersReducedMotion = event.matches
+      })
+    } else {
+      reducedMotionQuery = null
+    }
+  }
+  return prefersReducedMotion
+}
+
 function motionAllowed() {
-  return !(
-    document.documentElement.classList.contains('no-motion') ||
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  )
+  return !(document.documentElement.classList.contains('no-motion') || isReducedMotion())
 }
 
 /**
@@ -34,23 +49,48 @@ export function EdgeGlow({ active }: EdgeGlowProps) {
     if (!host || !canvas || typeof Worker === 'undefined' || !('transferControlToOffscreen' in canvas)) return
     const root = document.documentElement
     let worker: Worker | null = null
+    let lastResize: { width: number; height: number; dpr: number; radius: number } | null = null
+    let lastState: { lit: boolean; asleep: boolean; motion: boolean; divisor: number } | null = null
 
     const post = (message: EdgeGlowMessage) => worker?.postMessage(message)
     const measure = () => {
+      if (!worker) return
       const rect = host.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return
       const dpr = window.devicePixelRatio || 1
       const radius = Number.parseFloat(getComputedStyle(host).borderTopLeftRadius) || 0
-      post({ type: 'resize', width: Math.round(rect.width * dpr), height: Math.round(rect.height * dpr), dpr, radius })
+      const width = Math.round(rect.width * dpr)
+      const height = Math.round(rect.height * dpr)
+      if (
+        lastResize &&
+        lastResize.width === width &&
+        lastResize.height === height &&
+        lastResize.dpr === dpr &&
+        lastResize.radius === radius
+      ) {
+        return
+      }
+      lastResize = { width, height, dpr, radius }
+      post({ type: 'resize', width, height, dpr, radius })
     }
-    const sendState = () =>
-      post({
-        type: 'state',
-        lit: activeRef.current,
-        asleep: root.classList.contains('is-asleep'),
-        motion: motionAllowed(),
-        divisor: frameDivisor(),
-      })
+    const sendState = () => {
+      if (!worker) return
+      const lit = activeRef.current
+      const asleep = root.classList.contains('is-asleep')
+      const motion = motionAllowed()
+      const divisor = frameDivisor()
+      if (
+        lastState &&
+        lastState.lit === lit &&
+        lastState.asleep === asleep &&
+        lastState.motion === motion &&
+        lastState.divisor === divisor
+      ) {
+        return
+      }
+      lastState = { lit, asleep, motion, divisor }
+      post({ type: 'state', lit, asleep, motion, divisor })
+    }
     const start = () => {
       if (worker) return
       try {
@@ -74,8 +114,15 @@ export function EdgeGlow({ active }: EdgeGlowProps) {
     const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     resizeObserver?.observe(host)
     // Into the tray and back (is-asleep), or motion switched off (no-motion).
+    let wasAsleep = root.classList.contains('is-asleep')
+    let wasNoMotion = root.classList.contains('no-motion')
     const classObserver = new MutationObserver(() => {
-      measure()
+      const isAsleep = root.classList.contains('is-asleep')
+      const isNoMotion = root.classList.contains('no-motion')
+      if (isAsleep === wasAsleep && isNoMotion === wasNoMotion) return
+      if (wasAsleep && !isAsleep) measure()
+      wasAsleep = isAsleep
+      wasNoMotion = isNoMotion
       sendState()
     })
     classObserver.observe(root, { attributes: true, attributeFilter: ['class'] })

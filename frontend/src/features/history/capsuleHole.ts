@@ -15,6 +15,7 @@ let capsule: HTMLElement | null = null
 let trackUntil = 0
 let tracking = false
 const written = new WeakMap<HTMLElement, string>()
+const holed = new Set<HTMLElement>()
 
 function write(highlight: HTMLElement, key: string, apply: () => void) {
   if (written.get(highlight) === key) return
@@ -29,13 +30,26 @@ function placeHoles() {
   // The capsule's own width (3 or 4 buttons), before any glide transform: picks the hole's shape.
   const wide = capsule && capsule.offsetWidth > 111 ? '4' : '3'
 
+  // Only lit/active cards (plus any card that currently holds a hole) can show a highlight;
+  // scanning the whole list every frame forces layout measurements across offscreen rows.
+  const targets = new Set<HTMLElement>(holed)
+  for (const highlight of document.querySelectorAll<HTMLElement>(
+    '.panel-card[data-lit] .panel-card-highlight, .panel-card[data-active="true"] .panel-card-highlight',
+  )) {
+    targets.add(highlight)
+  }
+
   // All measuring first, then all writing: a read after a write would make the browser redo
   // style and layout once per row, every frame.
-  const updates: Array<[HTMLElement, string, () => void]> = []
-  for (const highlight of document.querySelectorAll<HTMLElement>('.panel-card-highlight')) {
+  const updates: Array<[HTMLElement, string, () => void, boolean]> = []
+  for (const highlight of targets) {
+    if (!highlight.isConnected) {
+      holed.delete(highlight)
+      continue
+    }
     const rect = highlight.getBoundingClientRect()
     if (!box || !highlight.offsetWidth || box.bottom <= rect.top || box.top >= rect.bottom) {
-      updates.push([highlight, 'off', () => highlight.style.setProperty('--hole-y', OFF)])
+      updates.push([highlight, 'off', () => highlight.style.setProperty('--hole-y', OFF), false])
       continue
     }
     // The row's own scale (a press squeezes it slightly): the mask lives in its untransformed space.
@@ -54,9 +68,14 @@ function placeHoles() {
         highlight.style.setProperty('--hole-w', `${w}px`)
         highlight.style.setProperty('--hole-h', `${h}px`)
       },
+      true,
     ])
   }
-  for (const [highlight, key, apply] of updates) write(highlight, key, apply)
+  for (const [highlight, key, apply, hasHole] of updates) {
+    if (hasHole) holed.add(highlight)
+    else holed.delete(highlight)
+    write(highlight, key, apply)
+  }
 }
 
 function tick() {

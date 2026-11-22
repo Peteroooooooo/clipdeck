@@ -19,7 +19,11 @@
 
 namespace {
 
+constexpr size_t kSharedSize = sizeof(SharedCapture) + kCapturePixelCapacity;
+constexpr size_t kCommitChunk = 1024ull * 1024;
+
 SharedCapture* g_shared = nullptr;
+size_t g_committed = 0;
 
 BOOL CALLBACK OnFrame(HWND, void* source, MAGIMAGEHEADER header, void*, MAGIMAGEHEADER, RECT, RECT, HRGN) {
     if (g_shared == nullptr || source == nullptr) {
@@ -28,6 +32,14 @@ BOOL CALLBACK OnFrame(HWND, void* source, MAGIMAGEHEADER header, void*, MAGIMAGE
     size_t const bytes = static_cast<size_t>(header.stride) * header.height;
     if (bytes > kCapturePixelCapacity) {
         return TRUE;
+    }
+    size_t const needed = sizeof(SharedCapture) + bytes;
+    if (needed > g_committed) {
+        size_t const grow = std::min(kSharedSize, ((needed + kCommitChunk - 1) / kCommitChunk) * kCommitChunk);
+        if (VirtualAlloc(g_shared, grow, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+            return TRUE;
+        }
+        g_committed = grow;
     }
     std::memcpy(g_shared + 1, source, bytes);
     g_shared->width = header.width;
@@ -60,9 +72,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         return 2;
     }
     g_shared = static_cast<SharedCapture*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
-    if (g_shared == nullptr || !MagInitialize()) {
+    if (g_shared == nullptr ||
+        VirtualAlloc(g_shared, sizeof(SharedCapture), MEM_COMMIT, PAGE_READWRITE) == nullptr ||
+        !MagInitialize()) {
         return 3;
     }
+    g_committed = sizeof(SharedCapture);
 
     HWND host = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"Static", L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                 instance, nullptr);

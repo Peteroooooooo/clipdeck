@@ -20,28 +20,65 @@ interface BackdropDetail {
 type MovedDetail = Pick<BackdropDetail, 'windowLeft' | 'windowTop'>
 
 let current: BackdropDetail | null = null
+let windowEl: HTMLElement | null = null
+let activeAnimation: Animation | null = null
 
-function applyPosition(root: HTMLElement) {
+function backdropTarget(root: HTMLElement) {
+  if (windowEl && windowEl.isConnected) {
+    return windowEl
+  }
+  windowEl = document.querySelector<HTMLElement>('.glass-window')
+  return windowEl ?? root
+}
+
+function applyPosition(target: HTMLElement) {
   if (!current) {
     return
   }
   const dpr = window.devicePixelRatio || 1
   const x = (current.left - current.windowLeft) / dpr
   const y = (current.top - current.windowTop) / dpr
-  root.style.setProperty('--backdrop-x', `calc(${x}px - var(--shell-pad))`)
-  root.style.setProperty('--backdrop-y', `calc(${y}px - var(--shell-pad))`)
-  root.style.setProperty('--backdrop-w', `${current.width / dpr}px`)
-  root.style.setProperty('--backdrop-h', `${current.height / dpr}px`)
+  target.style.setProperty('--backdrop-x', `calc(${x}px - var(--shell-pad))`)
+  target.style.setProperty('--backdrop-y', `calc(${y}px - var(--shell-pad))`)
+  target.style.setProperty('--backdrop-w', `${current.width / dpr}px`)
+  target.style.setProperty('--backdrop-h', `${current.height / dpr}px`)
 }
 
-function fadeIn(element: HTMLElement | null) {
-  if (!element || typeof element.animate !== 'function') {
+function clearPrev(target: HTMLElement) {
+  target.style.removeProperty('--backdrop-prev')
+}
+
+function fadeIn(element: HTMLElement | null, target: HTMLElement) {
+  if (activeAnimation) {
+    activeAnimation.cancel()
+    activeAnimation = null
+  }
+  if (
+    !element ||
+    typeof element.animate !== 'function' ||
+    document.documentElement.classList.contains('no-motion') ||
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  ) {
+    clearPrev(target)
     return
   }
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-    return
+  const anim = element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' })
+  activeAnimation = anim
+  const done = () => {
+    if (activeAnimation === anim) {
+      activeAnimation = null
+      clearPrev(target)
+    }
   }
-  element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' })
+  if (anim.finished && typeof anim.finished.then === 'function') {
+    anim.finished.then(done, () => {
+      if (activeAnimation === anim) {
+        activeAnimation = null
+      }
+    })
+  } else {
+    anim.onfinish = done
+  }
 }
 
 export function installDesktopBackdrop(root: HTMLElement = document.documentElement) {
@@ -50,15 +87,16 @@ export function installDesktopBackdrop(root: HTMLElement = document.documentElem
     if (!detail?.url) {
       return
     }
+    const target = backdropTarget(root)
     // Keep the previous snapshot underneath and fade the new one in, so the glass never
     // flashes back to the plain fallback colour.
-    const previous = root.style.getPropertyValue('--backdrop-image')
-    root.style.setProperty('--backdrop-prev', previous || 'none')
+    const previous = target.style.getPropertyValue('--backdrop-image')
+    target.style.setProperty('--backdrop-prev', previous || 'none')
     current = detail
-    root.style.setProperty('--backdrop-image', `url("${detail.url}")`)
-    applyPosition(root)
+    target.style.setProperty('--backdrop-image', `url("${detail.url}")`)
+    applyPosition(target)
     root.classList.add('has-backdrop')
-    fadeIn(document.querySelector<HTMLElement>('.glass-backdrop'))
+    fadeIn(document.querySelector<HTMLElement>('.glass-backdrop'), target)
   }
 
   const handleMoved = (event: Event) => {
@@ -67,7 +105,7 @@ export function installDesktopBackdrop(root: HTMLElement = document.documentElem
       return
     }
     current = { ...current, ...detail }
-    applyPosition(root)
+    applyPosition(backdropTarget(root))
   }
 
   // "live": the Windows compositor blurs the desktop under the page in real time, so the page
@@ -81,6 +119,10 @@ export function installDesktopBackdrop(root: HTMLElement = document.documentElem
   window.addEventListener('clipdeck:moved', handleMoved)
   window.addEventListener('clipdeck:glass', handleGlass)
   return () => {
+    activeAnimation?.cancel()
+    activeAnimation = null
+    windowEl = null
+    current = null
     window.removeEventListener('clipdeck:backdrop', handleBackdrop)
     window.removeEventListener('clipdeck:moved', handleMoved)
     window.removeEventListener('clipdeck:glass', handleGlass)

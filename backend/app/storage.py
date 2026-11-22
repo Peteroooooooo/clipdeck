@@ -27,6 +27,7 @@ class AppStorage:
         self.history_path = self.base_path / "history.json"
         self.settings_path = self.base_path / "settings.json"
         self.window_path = self.base_path / "window.json"
+        self._icon_cache: dict[str, str | None] = {}
         self._ensure_directories()
 
     def load_panel_height(self) -> int | None:
@@ -79,7 +80,7 @@ class AppStorage:
         serialized = [record.to_dict() for record in records]
         atomic_write_text(
             self.history_path,
-            json.dumps(serialized, ensure_ascii=False, indent=2),
+            json.dumps(serialized, ensure_ascii=False, separators=(",", ":")),
         )
 
     def save_image_bytes(self, *, record_id: str, image_bytes: bytes) -> str:
@@ -103,21 +104,34 @@ class AppStorage:
     def app_icon(self, exe_path: str, *, extract=None) -> str | None:
         """URI of the cached icon of an app's exe, extracting it the first time. Icons are tiny
         and one per app, so they are kept for good (a later clip from the same app reuses it)."""
-        key = hashlib.sha1(os.path.normcase(exe_path).encode("utf-8")).hexdigest()[:16]
+        norm_path = os.path.normcase(exe_path)
+        if extract is None and norm_path in self._icon_cache:
+            return self._icon_cache[norm_path]
+
+        key = hashlib.sha1(norm_path.encode("utf-8")).hexdigest()[:16]
         icon_path = self.icons_path / f"{key}.png"
         if icon_path.exists():
-            return icon_path.as_uri()
-        if extract is None:
-            from .app_icons import extract_icon_png as extract
+            uri = icon_path.as_uri()
+            if extract is None:
+                self._icon_cache[norm_path] = uri
+            return uri
+        extractor = extract
+        if extractor is None:
+            from .app_icons import extract_icon_png as extractor
         try:
-            png = extract(exe_path)
+            png = extractor(exe_path)
         except OSError:
             png = None
         if not png:
+            if extract is None:
+                self._icon_cache[norm_path] = None
             return None
         self.icons_path.mkdir(parents=True, exist_ok=True)
         icon_path.write_bytes(png)
-        return icon_path.as_uri()
+        uri = icon_path.as_uri()
+        if extract is None:
+            self._icon_cache[norm_path] = uri
+        return uri
 
     def read_image_bytes(self, image_path: str | None) -> bytes | None:
         source_path = resolve_local_path(image_path)
@@ -127,18 +141,17 @@ class AppStorage:
 
     def prune_unreferenced_images(self, image_paths: Iterable[str | None]) -> None:
         self._ensure_directories()
-        referenced_paths: set[Path] = set()
-        images_root = self.images_path.resolve()
+        referenced_paths: set[str] = set()
+        images_root = os.path.normcase(os.path.abspath(str(self.images_path)))
+        images_prefix = images_root if images_root.endswith(os.sep) else images_root + os.sep
 
         for image_path in image_paths:
             resolved_path = resolve_local_path(image_path)
             if resolved_path is None:
                 continue
 
-            try:
-                normalized = resolved_path.resolve()
-                normalized.relative_to(images_root)
-            except (FileNotFoundError, ValueError):
+            normalized = os.path.normcase(os.path.abspath(str(resolved_path)))
+            if not normalized.startswith(images_prefix):
                 continue
 
             referenced_paths.add(normalized)
@@ -146,7 +159,7 @@ class AppStorage:
         for candidate in self.images_path.iterdir():
             if not candidate.is_file():
                 continue
-            if candidate.resolve() not in referenced_paths:
+            if os.path.normcase(os.path.abspath(str(candidate))) not in referenced_paths:
                 candidate.unlink()
 
     def _ensure_directories(self) -> None:

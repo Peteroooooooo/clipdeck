@@ -191,3 +191,21 @@ def test_bridge_can_toggle_always_on_top_for_current_run(tmp_path: Path) -> None
 
     assert initial_snapshot["isAlwaysOnTop"] is False
     assert updated_snapshot["isAlwaysOnTop"] is True
+
+
+def test_is_handling_call_is_true_only_during_bridge_mutations(tmp_path: Path) -> None:
+    state = AppState(storage=AppStorage(base_path=tmp_path / "data"))
+    bridge = AppBridge(state)
+    observations: list[bool] = []
+    state.subscribe(lambda _snapshot: observations.append(bridge._is_handling_call()))
+
+    created = state.ingest_capture(
+        ClipboardCapture(text="direct ingest", source_app="VS Code"),
+        captured_at="2026-03-11T11:15:00",
+    )
+    record_id = str(created["recentRecords"][0]["id"])
+    bridge.delete_record(record_id)
+
+    assert observations == [False, True]
+    assert bridge._is_handling_call() is False
+

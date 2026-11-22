@@ -19,8 +19,9 @@ const HIGHLIGHT_FADE_MS = 400
  * meteor carries on round the next row from where it was rather than starting a new lap.
  */
 function syncMeteor(card: HTMLElement) {
-  if (typeof card.getAnimations !== 'function' || typeof CSSAnimation === 'undefined') return
-  for (const animation of card.getAnimations({ subtree: true })) {
+  const edge = card.querySelector<HTMLElement>('.panel-card-edge')
+  if (!edge || typeof edge.getAnimations !== 'function' || typeof CSSAnimation === 'undefined') return
+  for (const animation of edge.getAnimations()) {
     if (animation instanceof CSSAnimation && animation.animationName === 'row-meteor') {
       animation.startTime = 0
     }
@@ -81,17 +82,6 @@ function PreviewAvatar({ record, source, title }: { record: HistoryRecord; sourc
   return <SourceAvatar record={record} source={source} />
 }
 
-// The highlight's soft light follows the pointer; written straight to CSS vars so hovering never
-// re-renders. On the highlight itself, not the row: a var on the row restyles everything in it.
-function trackSpotlight(event: React.MouseEvent<HTMLElement>) {
-  const card = event.currentTarget
-  const highlight = card.querySelector<HTMLElement>('.panel-card-highlight')
-  if (!highlight) return
-  const rect = card.getBoundingClientRect()
-  highlight.style.setProperty('--mx', `${Math.round(event.clientX - rect.left)}px`)
-  highlight.style.setProperty('--my', `${Math.round(event.clientY - rect.top)}px`)
-}
-
 interface HistoryCardProps {
   record: HistoryRecord
   /** "3m ago", worked out by the list when it is shown, so only rows whose label changed re-render. */
@@ -105,6 +95,7 @@ interface HistoryCardProps {
   onPlainTextPaste?: (recordId: string) => void
   onPrimaryAction?: (recordId: string) => void
   onSaveImage?: (recordId: string) => void
+  observeVisibility?: (element: HTMLElement, onChange: (near: boolean) => void) => () => void
 }
 
 // Memoised: moving the pointer down the list re-renders only the row it left and the one it
@@ -121,12 +112,51 @@ export const HistoryCard = memo(function HistoryCard({
   onPlainTextPaste,
   onPrimaryAction,
   onSaveImage,
+  observeVisibility,
 }: HistoryCardProps) {
   const t = useT()
   const title = recordTitle(record, t)
   const source = sourceName(record, t)
-  const { groupRef: actionsRef, lensRef } = useLensGroup<HTMLDivElement>()
+  const [actionsFocused, setActionsFocused] = useState(false)
+  const lensEnabled = isActive || actionsFocused
+  const { groupRef: actionsRef, lensRef } = useLensGroup<HTMLDivElement>(lensEnabled)
   const cardRef = useRef<HTMLElement | null>(null)
+  const highlightRef = useRef<HTMLSpanElement | null>(null)
+  const spotlightFrameRef = useRef(0)
+  const spotlightCoordsRef = useRef({ x: 0, y: 0 })
+  const [nearViewport, setNearViewport] = useState(true)
+
+  useEffect(() => {
+    const card = cardRef.current
+    if (!card || !observeVisibility) return
+    return observeVisibility(card, setNearViewport)
+  }, [observeVisibility])
+
+  useEffect(() => () => window.cancelAnimationFrame(spotlightFrameRef.current), [])
+
+  // The highlight's soft light follows the pointer; written straight to CSS vars so hovering never
+  // re-renders. On the highlight itself, not the row: a var on the row restyles everything in it.
+  const trackSpotlight = (event: React.MouseEvent<HTMLElement>) => {
+    spotlightCoordsRef.current.x = event.clientX
+    spotlightCoordsRef.current.y = event.clientY
+    if (spotlightFrameRef.current) return
+    spotlightFrameRef.current = window.requestAnimationFrame(() => {
+      spotlightFrameRef.current = 0
+      const card = cardRef.current
+      const highlight = highlightRef.current
+      if (!card || !highlight) return
+      const rect = card.getBoundingClientRect()
+      highlight.style.setProperty('--mx', `${Math.round(spotlightCoordsRef.current.x - rect.left)}px`)
+      highlight.style.setProperty('--my', `${Math.round(spotlightCoordsRef.current.y - rect.top)}px`)
+    })
+  }
+
+  const cancelSpotlight = () => {
+    if (spotlightFrameRef.current) {
+      window.cancelAnimationFrame(spotlightFrameRef.current)
+      spotlightFrameRef.current = 0
+    }
+  }
 
   // The meteor on the edge runs while the row is lit: active, and for the highlight's fade after.
   // Written to the element before paint, so it starts in the same frame as the highlight.
@@ -162,8 +192,9 @@ export const HistoryCard = memo(function HistoryCard({
       data-active={isActive}
       data-record-id={record.id}
       initial={{ opacity: 0, y: 8, scale: 0.98 }}
-      layout="position"
+      layout={nearViewport || isActive ? 'position' : false}
       onMouseEnter={() => onActivate(record.id)}
+      onMouseLeave={cancelSpotlight}
       onMouseMove={trackSpotlight}
       ref={cardRef}
       // whileTap would make the row a Tab stop of its own (with the browser's focus outline);
@@ -173,7 +204,7 @@ export const HistoryCard = memo(function HistoryCard({
       whileTap={{ scale: 0.985 }}
     >
       {/* Fades in under the active row and out of the previous one; a thin edge of drifting colour. */}
-      <span aria-hidden="true" className="panel-card-highlight">
+      <span aria-hidden="true" className="panel-card-highlight" ref={highlightRef}>
         <span className="panel-card-edge" />
       </span>
 
@@ -198,7 +229,17 @@ export const HistoryCard = memo(function HistoryCard({
         </span>
       </button>
 
-      <div className="card-actions magnet-target" data-gliding={isActive && capsuleGliding} ref={actionsRef}>
+      <div
+        className="card-actions magnet-target"
+        data-gliding={isActive && capsuleGliding}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setActionsFocused(false)
+          }
+        }}
+        onFocus={() => setActionsFocused(true)}
+        ref={actionsRef}
+      >
         {/* One capsule of liquid glass for the whole list: the active row hosts it, so it glides
             from row to row. The old one is unmounted at once and the new one glides in from where
             it was, so there is only ever one: kept around (AnimatePresence), Motion stacks the two
@@ -281,7 +322,7 @@ export const HistoryCard = memo(function HistoryCard({
           <TrashSimple size={15} />
         </button>
         {/* The lens that follows the pointer across the buttons. */}
-        <LiquidGlass className="button-lens" ref={lensRef} variant="lens" />
+        {lensEnabled ? <LiquidGlass className="button-lens" ref={lensRef} variant="lens" /> : null}
       </div>
     </motion.article>
   )

@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { ArrowCounterClockwise } from '@phosphor-icons/react'
 import {
   BACKDROP_BLUR_MAX,
@@ -65,6 +66,7 @@ export function GlassSections({ appearance, glassInfo, onChange, onReset }: Appe
       : a.sourceHintSnapshot
     : a.sourceHintUnavailable
   const autoTone = resolveTextTone({ ...appearance, textTone: 'auto' })
+  const glassPresets = useMemo(() => localized(GLASS_PRESETS, t), [t])
 
   return (
     <>
@@ -96,7 +98,7 @@ export function GlassSections({ appearance, glassInfo, onChange, onReset }: Appe
             activeId={matchingPreset(GLASS_PRESETS, appearance)?.id ?? null}
             label={a.glassTemplate}
             onPick={(values) => onChange(values)}
-            presets={localized(GLASS_PRESETS, t)}
+            presets={glassPresets}
           />
           <ChoiceRow<GlassSource>
             description={sourceHint}
@@ -213,6 +215,7 @@ export function LiquidSections({ appearance, glassInfo, onChange, onReset }: App
   const a = t.appearance
   const liquid = appearance.liquidEnabled
   const modes: LiquidMode[] = ['standard', 'polar', 'prominent', 'shader']
+  const liquidPresets = useMemo(() => localized(LIQUID_PRESETS, t), [t])
 
   return (
     <section aria-label={t.settings.categories.liquid[0]} className="settings-section">
@@ -229,7 +232,7 @@ export function LiquidSections({ appearance, glassInfo, onChange, onReset }: App
           disabled={!liquid}
           label={a.liquidTemplate}
           onPick={(values) => onChange(values)}
-          presets={localized(LIQUID_PRESETS, t)}
+          presets={liquidPresets}
         />
         <ChoiceRow<LiquidMode>
           description={a.refraction[1]}

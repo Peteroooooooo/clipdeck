@@ -193,10 +193,13 @@ function visibleCards(panel: HTMLElement) {
   const cards = Array.from(panel.querySelectorAll<HTMLElement>('.panel-card'))
   const view = panel.querySelector<HTMLElement>('.panel-scroll')?.getBoundingClientRect()
   if (!view) return cards.slice(0, 8)
-  return cards.filter((card) => {
+  const visible: HTMLElement[] = []
+  for (const card of cards) {
     const box = card.getBoundingClientRect()
-    return box.bottom > view.top && box.top < view.bottom
-  })
+    if (box.top >= view.bottom) break
+    if (box.bottom > view.top) visible.push(card)
+  }
+  return visible
 }
 
 /** The panel's look right now, including any running animation. */

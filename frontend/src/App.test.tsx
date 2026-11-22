@@ -162,6 +162,29 @@ describe('App shell', () => {
     })
   })
 
+  test('deleting the active middle card hands focus to the next card instead of jumping to the top', async () => {
+    const user = userEvent.setup()
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'ClipDeck' })).toBeInTheDocument()
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-record-id]'))
+    const target = cards[4]
+    const nextId = cards[5].dataset.recordId
+    expect(nextId).toBeTruthy()
+
+    await user.hover(target)
+    expect(target).toHaveAttribute('data-active', 'true')
+
+    await user.click(within(target).getByRole('button', { name: 'Delete' }))
+
+    await vi.waitFor(() => {
+      const nextCard = document.querySelector<HTMLElement>(`[data-record-id="${nextId}"]`)
+      expect(nextCard).toHaveAttribute('data-active', 'true')
+      expect(document.querySelectorAll('[data-record-id]')[0]).toHaveAttribute('data-active', 'false')
+    })
+  })
+
   test('copy button delegates to the desktop copy action', async () => {
     const user = userEvent.setup()
     const copyRecordSpy = vi.spyOn(desktopApi, 'copyRecord')

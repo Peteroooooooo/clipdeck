@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from .models import AppearanceSettings
 from .state import AppState
@@ -9,6 +12,7 @@ from .state import AppState
 class AppBridge:
     def __init__(self, state: AppState) -> None:
         self._state = state
+        self._call_state = threading.local()
         self._hide_window: Callable[[], None] | None = None
         self._pick_storage_path: Callable[[str], str | None] | None = None
         self._confirm_clear_all_history: Callable[[], bool] | None = None
@@ -72,60 +76,85 @@ class AppBridge:
             return
         self._preview_appearance(AppearanceSettings.from_dict(appearance if isinstance(appearance, dict) else None).to_dict())
 
+    @contextmanager
+    def _handling_call(self) -> Iterator[None]:
+        depth = getattr(self._call_state, "depth", 0)
+        self._call_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            self._call_state.depth = depth
+
+    def _is_handling_call(self) -> bool:
+        return getattr(self._call_state, "depth", 0) > 0
+
     def get_app_state(self) -> dict[str, object]:
         return self._snapshot()
 
     def set_view(self, view: str) -> dict[str, object]:
-        if view != "panel":
-            self._state.clear_paste_target()
-        return self.with_window_state(self._state.set_view(view))
+        with self._handling_call():
+            if view != "panel":
+                self._state.clear_paste_target()
+            return self.with_window_state(self._state.set_view(view))
 
     def toggle_pause(self) -> dict[str, object]:
-        return self.with_window_state(self._state.toggle_pause())
+        with self._handling_call():
+            return self.with_window_state(self._state.toggle_pause())
 
     def toggle_pin(self, record_id: str) -> dict[str, object]:
-        return self.with_window_state(self._state.toggle_pin(record_id))
+        with self._handling_call():
+            return self.with_window_state(self._state.toggle_pin(record_id))
 
     def delete_record(self, record_id: str) -> dict[str, object]:
-        return self.with_window_state(self._state.delete_record(record_id))
+        with self._handling_call():
+            return self.with_window_state(self._state.delete_record(record_id))
 
     def undo_delete(self) -> dict[str, object]:
-        return self.with_window_state(self._state.undo_delete())
+        with self._handling_call():
+            return self.with_window_state(self._state.undo_delete())
 
     def clear_all_history(self) -> dict[str, object]:
-        return self.with_window_state(self._state.clear_all_history())
+        with self._handling_call():
+            return self.with_window_state(self._state.clear_all_history())
 
     def clear_unpinned_history(self) -> dict[str, object]:
-        return self.with_window_state(self._state.clear_unpinned_history())
+        with self._handling_call():
+            return self.with_window_state(self._state.clear_unpinned_history())
 
     def trigger_primary_action(self, record_id: str) -> dict[str, object]:
-        if self._should_hide_window_for_action():
-            self._hide_window()
-        return self.with_window_state(self._state.trigger_primary_action(record_id))
+        with self._handling_call():
+            if self._should_hide_window_for_action():
+                self._hide_window()
+            return self.with_window_state(self._state.trigger_primary_action(record_id))
 
     def paste_plain_text(self, record_id: str) -> dict[str, object]:
-        if self._should_hide_window_for_action() and self._state.has_paste_target():
-            self._hide_window()
-        return self.with_window_state(self._state.paste_plain_text(record_id))
+        with self._handling_call():
+            if self._should_hide_window_for_action() and self._state.has_paste_target():
+                self._hide_window()
+            return self.with_window_state(self._state.paste_plain_text(record_id))
 
     def copy_record(self, record_id: str) -> dict[str, object]:
-        if self._should_hide_window_for_action():
-            self.hide_window()
-        return self.with_window_state(self._state.copy_record(record_id))
+        with self._handling_call():
+            if self._should_hide_window_for_action():
+                self.hide_window()
+            return self.with_window_state(self._state.copy_record(record_id))
 
     def save_image(self, record_id: str) -> dict[str, object]:
         """Saves an image clip into the image save folder; the window stays open."""
-        return self.with_window_state(self._state.save_image(record_id))
+        with self._handling_call():
+            return self.with_window_state(self._state.save_image(record_id))
 
     def save_settings(self, settings: dict[str, object], pause_recording: bool) -> dict[str, object]:
-        return self.with_window_state(self._state.save_settings(settings, pause_recording))
+        with self._handling_call():
+            return self.with_window_state(self._state.save_settings(settings, pause_recording))
 
     def default_shortcuts(self) -> dict[str, str]:
         """Factory shortcuts for the settings draft; nothing changes until the user saves."""
         return self._state.default_shortcuts()
 
     def dismiss_toast(self) -> dict[str, object]:
-        return self.with_window_state(self._state.dismiss_toast())
+        with self._handling_call():
+            return self.with_window_state(self._state.dismiss_toast())
 
     def toggle_always_on_top(self) -> dict[str, object]:
         if self._toggle_always_on_top is not None:

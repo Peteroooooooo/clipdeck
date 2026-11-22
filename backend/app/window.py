@@ -211,6 +211,9 @@ class AppWindowController:
             self.window.restore()
             self._apply_always_on_top()
             self._is_hidden = False
+            wake = getattr(self._glass, "wake", None)
+            if callable(wake):
+                wake()
             self._dispatch_event("clipdeck:prepare", {"seq": seq})
             fallback = threading.Timer(REVEAL_WAIT_LIMIT_S, self._reveal_after_wait, args=(seq,))
             fallback.daemon = True
@@ -230,6 +233,9 @@ class AppWindowController:
         self.window.restore()
         self._apply_always_on_top()
         self._is_hidden = False
+        wake = getattr(self._glass, "wake", None)
+        if callable(wake):
+            wake()
         if was_hidden and self._is_loaded:
             # The desktop grab (~0.1s) runs after showing so summoning never waits on it; the
             # panel excludes itself from the capture and blends in the fresh glass.

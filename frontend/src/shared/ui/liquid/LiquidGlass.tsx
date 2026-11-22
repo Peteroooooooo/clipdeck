@@ -10,19 +10,21 @@ import { createLiquidMap, type LiquidMaps } from './liquidMaps'
 
 interface GlassFilterProps {
   id: string
-  maps: LiquidMaps
   width: number
   height: number
+  maps: LiquidMaps
   displacementScale: number
   aberrationIntensity: number
 }
 
-/** The map and mask are drawn for this element's exact size, so they are placed 1:1 on it. */
-function MapImages({ maps, width, height }: Pick<GlassFilterProps, 'maps' | 'width' | 'height'>) {
+/** The map and mask stretch cleanly across the element's current box in userSpaceOnUse pixels. */
+function MapImages({ width, height, maps }: Pick<GlassFilterProps, 'width' | 'height' | 'maps'>) {
   return (
     <>
       <feImage height={height} href={maps.map} preserveAspectRatio="none" result="DISPLACEMENT_MAP" width={width} x="0" y="0" />
-      <feImage height={height} href={maps.mask} preserveAspectRatio="none" result="EDGE_MASK" width={width} x="0" y="0" />
+      {maps.mask ? (
+        <feImage height={height} href={maps.mask} preserveAspectRatio="none" result="EDGE_MASK" width={width} x="0" y="0" />
+      ) : null}
       <feImage height={height} href={maps.shape} preserveAspectRatio="none" result="SHAPE" width={width} x="0" y="0" />
     </>
   )
@@ -38,7 +40,7 @@ function ClipToShape() {
  * only correct over an opaque backdrop: over a translucent one (live mode, where the desktop is
  * composited by Windows outside the page) the three passes stack their alpha and turn grey.
  */
-function PlainGlassFilter({ id, maps, width, height, displacementScale }: GlassFilterProps) {
+function PlainGlassFilter({ id, width, height, maps, displacementScale }: GlassFilterProps) {
   return (
     <svg aria-hidden="true" className="liquid-defs" focusable="false">
       <filter colorInterpolationFilters="sRGB" filterUnits="userSpaceOnUse" height={height} id={id} width={width} x="0" y="0">
@@ -58,7 +60,7 @@ function PlainGlassFilter({ id, maps, width, height, displacementScale }: GlassF
 }
 
 /** liquid-glass-react's filter: per-channel displacement for chromatic aberration on the rim. */
-function GlassFilter({ id, maps, width, height, displacementScale, aberrationIntensity }: GlassFilterProps) {
+function GlassFilter({ id, width, height, maps, displacementScale, aberrationIntensity }: GlassFilterProps) {
   return (
     <svg aria-hidden="true" className="liquid-defs" focusable="false">
       <filter colorInterpolationFilters="sRGB" filterUnits="userSpaceOnUse" height={height} id={id} width={width} x="0" y="0">
@@ -133,6 +135,16 @@ function magnetize(element: HTMLElement, strength: number) {
   const target = element.closest<HTMLElement>('.magnet-target') ?? element
   const group = element.closest<HTMLElement>('.magnet-group')
   let pressed = false
+  let moveFrame = 0
+  let pendingX = 0
+  let pendingY = 0
+
+  const cancelMove = () => {
+    if (moveFrame) {
+      cancelAnimationFrame(moveFrame)
+      moveFrame = 0
+    }
+  }
 
   const place = (x: number, y: number) => {
     const area = target.getBoundingClientRect()
@@ -155,12 +167,14 @@ function magnetize(element: HTMLElement, strength: number) {
   }
 
   const enter = (x: number, y: number) => {
+    cancelMove()
     element.classList.add('is-hovered')
     group?.classList.add('is-magnet-on')
     place(x, y)
   }
 
   const leave = () => {
+    cancelMove()
     pressed = false
     element.classList.remove('is-hovered', 'is-pressed')
     for (const name of MAGNET_VARS) {
@@ -171,13 +185,27 @@ function magnetize(element: HTMLElement, strength: number) {
   }
 
   const onEnter = (event: PointerEvent) => enter(event.clientX, event.clientY)
-  const onMove = (event: PointerEvent) => place(event.clientX, event.clientY)
+  const onMove = (event: PointerEvent) => {
+    pendingX = event.clientX
+    pendingY = event.clientY
+    if (typeof requestAnimationFrame !== 'function') {
+      place(pendingX, pendingY)
+      return
+    }
+    if (moveFrame) return
+    moveFrame = requestAnimationFrame(() => {
+      moveFrame = 0
+      place(pendingX, pendingY)
+    })
+  }
   const onDown = (event: PointerEvent) => {
+    cancelMove()
     pressed = true
     element.classList.add('is-pressed')
     place(event.clientX, event.clientY)
   }
   const onUp = (event: PointerEvent) => {
+    cancelMove()
     pressed = false
     element.classList.remove('is-pressed')
     place(event.clientX, event.clientY)
@@ -230,6 +258,8 @@ interface LiquidGlassProps {
   magnetic?: boolean
   /** "lens": the moving magnifying drop instead of a frosted surface. */
   variant?: 'surface' | 'lens'
+  /** Pause ResizeObserver map regeneration while animating the element's size. */
+  freezeMap?: boolean
   style?: CSSProperties
   ref?: React.Ref<HTMLDivElement>
 }
@@ -240,16 +270,21 @@ export function LiquidGlass({
   cornerRadius = 999,
   magnetic = false,
   variant = 'surface',
+  freezeMap = false,
   style,
   ref,
 }: LiquidGlassProps) {
   const settings = useContext(LiquidGlassContext)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const freezeMapRef = useRef(freezeMap)
+  const measureRef = useRef<(() => void) | null>(null)
   const filterId = `liquid-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
   const [size, setSize] = useState({ width: 0, height: 0 })
+  const [mapSize, setMapSize] = useState({ width: 0, height: 0 })
   const liquid = settings.liquidEnabled
   const lens = variant === 'lens'
   const magnet = magnetic && !lens && settings.animations
+  const plain = settings.translucentBackdrop || settings.aberrationIntensity === 0
   const setRoot = (element: HTMLDivElement | null) => {
     rootRef.current = element
     if (typeof ref === 'function') ref(element)
@@ -259,10 +294,25 @@ export function LiquidGlass({
   useEffect(() => {
     const element = rootRef.current
     if (!element || !liquid || typeof ResizeObserver === 'undefined') {
+      measureRef.current = null
       return
     }
-    const resize = (width: number, height: number) =>
+    const resize = (width: number, height: number) => {
       setSize((current) => (current.width === width && current.height === height ? current : { width, height }))
+      setMapSize((current) => {
+        if (freezeMapRef.current && current.width > 0 && current.height > 0) return current
+        return current.width === width && current.height === height ? current : { width, height }
+      })
+    }
+    const measure = () => {
+      const computed = getComputedStyle(element)
+      const pad = (value: string) => parseFloat(value) || 0
+      resize(
+        Math.round(element.clientWidth - pad(computed.paddingLeft) - pad(computed.paddingRight)),
+        Math.round(element.clientHeight - pad(computed.paddingTop) - pad(computed.paddingBottom)),
+      )
+    }
+    measureRef.current = measure
     const observer = new ResizeObserver(([entry]) => {
       resize(Math.round(entry.contentRect.width), Math.round(entry.contentRect.height))
     })
@@ -270,19 +320,25 @@ export function LiquidGlass({
     // Measured right away as well: the app starts hidden in the tray, and a hidden page delivers
     // no ResizeObserver callbacks until it is first shown. Without this every surface would draw
     // its maps in the very frame the panel is first summoned, and that first summon stuttered.
-    const style = getComputedStyle(element)
-    const pad = (value: string) => parseFloat(value) || 0
-    resize(
-      Math.round(element.clientWidth - pad(style.paddingLeft) - pad(style.paddingRight)),
-      Math.round(element.clientHeight - pad(style.paddingTop) - pad(style.paddingBottom)),
-    )
-    return () => observer.disconnect()
+    measure()
+    return () => {
+      measureRef.current = null
+      observer.disconnect()
+    }
   }, [liquid])
+
+  useEffect(() => {
+    const wasFrozen = freezeMapRef.current
+    freezeMapRef.current = freezeMap
+    if (wasFrozen && !freezeMap) {
+      measureRef.current?.()
+    }
+  }, [freezeMap])
 
   const mode = lens ? 'lens' : settings.liquidMode
   const map = useMemo(
-    () => (liquid ? createLiquidMap(mode, size.width, size.height, cornerRadius) : null),
-    [liquid, mode, size.width, size.height, cornerRadius],
+    () => (liquid ? createLiquidMap(mode, mapSize.width, mapSize.height, cornerRadius, !plain) : null),
+    [liquid, mode, mapSize.width, mapSize.height, cornerRadius, plain],
   )
 
   useEffect(() => {
@@ -320,8 +376,8 @@ export function LiquidGlass({
       ref={setRoot}
       style={{ ...style, '--lg-radius': `${cornerRadius}px`, '--lg-shade': settings.liquidShade / 100 } as CSSProperties}
     >
-      {map && displacement > 0 ? (
-        settings.translucentBackdrop || settings.aberrationIntensity === 0 ? (
+      {map && displacement > 0 && size.width > 0 && size.height > 0 ? (
+        plain ? (
           <PlainGlassFilter
             aberrationIntensity={settings.aberrationIntensity}
             displacementScale={displacement}
@@ -342,7 +398,7 @@ export function LiquidGlass({
         )
       ) : null}
       <span aria-hidden="true" className="liquid-warp" style={warpStyle} />
-      <span aria-hidden="true" className="liquid-shade" />
+      {settings.liquidShade !== 0 ? <span aria-hidden="true" className="liquid-shade" /> : null}
       <span aria-hidden="true" className="liquid-rim is-screen" />
       <span aria-hidden="true" className="liquid-rim is-overlay" />
       {magnet ? <span aria-hidden="true" className="liquid-spot" /> : null}

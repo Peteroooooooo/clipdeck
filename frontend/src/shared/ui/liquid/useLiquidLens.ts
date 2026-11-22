@@ -32,11 +32,26 @@ const spring = (x = 0): Spring => ({ x, v: 0, t: x })
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
 const settled = (s: Spring) => Math.abs(s.x - s.t) < 0.005 && Math.abs(s.v) < 0.005
 
+let reducedMotionQuery: MediaQueryList | null | undefined
+let prefersReducedMotion = false
+
+function isReducedMotion() {
+  if (reducedMotionQuery === undefined) {
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+      prefersReducedMotion = reducedMotionQuery.matches
+      reducedMotionQuery.addEventListener?.('change', (event) => {
+        prefersReducedMotion = event.matches
+      })
+    } else {
+      reducedMotionQuery = null
+    }
+  }
+  return prefersReducedMotion
+}
+
 function motionOff() {
-  return (
-    document.documentElement.classList.contains('no-motion') ||
-    Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-  )
+  return document.documentElement.classList.contains('no-motion') || isReducedMotion()
 }
 
 function advance(s: Spring, dt: number, k: number, c: number) {
@@ -83,35 +98,54 @@ function substeps(dt: number, each: (h: number) => void) {
   for (let i = 0; i < steps; i += 1) each(dt / steps)
 }
 
-const centreOf = (element: HTMLElement) => element.offsetLeft + element.offsetWidth / 2
+const geometryOf = (element: HTMLElement) => ({
+  left: element.offsetLeft,
+  width: element.offsetWidth,
+})
 
 /**
  * A lens shared by the buttons in `groupRef` that carry `data-lens`. Put the lens element (a
  * LiquidGlass variant="lens") in the group and give it `lensRef`.
  */
-export function useLensGroup<G extends HTMLElement = HTMLElement>() {
+export function useLensGroup<G extends HTMLElement = HTMLElement>(enabled = true) {
   const groupRef = useRef<G | null>(null)
   const lensRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const group = groupRef.current
     const lens = lensRef.current
-    if (!group || !lens) return
+    if (!enabled || !group || !lens) {
+      if (lens) lens.style.display = 'none'
+      return
+    }
     const st = { x: spring(), vis: spring(), press: spring() }
+    let lensHalf = lens.offsetWidth / 2
+    let measuredLens = lensHalf > 0
 
     const render = () => {
       // Faded out it is taken out of drawing altogether: every row has one, and a lens that is
       // only invisible (visibility: hidden) still adds its backdrop filter's render passes to
       // every frame the window draws (measured: 16 passes a frame with them, 8 without).
       const hidden = st.vis.x < 0.01
-      lens.style.display = hidden ? 'none' : ''
-      if (hidden) return
+      if (hidden) {
+        if (lens.style.display !== 'none') lens.style.display = 'none'
+        return
+      }
+      const wasHidden = lens.style.display === 'none'
+      if (wasHidden) {
+        lens.style.display = ''
+      } else if (!measuredLens) {
+        const w = lens.offsetWidth
+        if (w > 0) {
+          lensHalf = w / 2
+          measuredLens = true
+        }
+      }
       const stretch = Math.min(Math.abs(st.x.v) / 900, 0.55) * ELASTIC
       const appear = 0.55 + 0.45 * clamp01(st.vis.x)
       const sx = (1 + stretch + st.press.x * 0.16) * appear
       const sy = (1 - stretch * 0.45 - st.press.x * 0.16) * appear
-      const half = lens.offsetWidth / 2
-      lens.style.transform = `translateX(${(st.x.x - half).toFixed(2)}px) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`
+      lens.style.transform = `translateX(${(st.x.x - lensHalf).toFixed(2)}px) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`
       lens.style.setProperty('--vis', clamp01(st.vis.x).toFixed(3))
     }
 
@@ -132,12 +166,15 @@ export function useLensGroup<G extends HTMLElement = HTMLElement>() {
     })
 
     const moveTo = (button: HTMLElement) => {
+      const { left, width } = geometryOf(button)
+      const centre = left + width / 2
+      if (!lensHalf && width > 0) lensHalf = width / 2
       // Appearing: start right on the button instead of sliding in from the last one.
       if (st.vis.x < 0.05) {
-        st.x.x = centreOf(button)
+        st.x.x = centre
         st.x.v = 0
       }
-      st.x.t = centreOf(button)
+      st.x.t = centre
       st.vis.t = 1
       loop.kick()
     }
@@ -181,7 +218,7 @@ export function useLensGroup<G extends HTMLElement = HTMLElement>() {
       group.removeEventListener('focusin', onFocusIn)
       group.removeEventListener('focusout', onFocusOut)
     }
-  }, [])
+  }, [enabled])
 
   return { groupRef, lensRef }
 }
@@ -206,10 +243,13 @@ export function useLensDrop<G extends HTMLElement = HTMLElement>(selectedKey: st
     const aim = (instant: boolean) => {
       const current = selected()
       if (!current) return
-      drop.style.width = `${current.offsetWidth}px`
+      const width = current.offsetWidth
+      const currentLeft = current.offsetLeft
+      const hoveredLeft = hovered && hovered !== current ? hovered.offsetLeft : currentLeft
+      drop.style.width = `${width}px`
       // Leans a little towards a hovered tab, like a drop being tempted across.
-      const lean = hovered && hovered !== current ? (hovered.offsetLeft - current.offsetLeft) * 0.1 : 0
-      st.x.t = current.offsetLeft + lean
+      const lean = (hoveredLeft - currentLeft) * 0.1
+      st.x.t = currentLeft + lean
       if (instant) snap(st.x)
       loop.kick()
     }

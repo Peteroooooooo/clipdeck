@@ -5,6 +5,7 @@ import hashlib
 import io
 import os
 import re
+import struct
 import threading
 import time
 import uuid
@@ -103,7 +104,10 @@ class ClipboardMonitor:
                 self.poll_once()
             except Exception:
                 pass
-            self.sleep_fn(self.poll_interval)
+            if self.sleep_fn is time.sleep:
+                self._stop_event.wait(self.poll_interval)
+            else:
+                self.sleep_fn(self.poll_interval)
 
 
 class SelfWriteTracker:
@@ -130,6 +134,35 @@ class SelfWriteTracker:
             return any(start < sequence_number <= end for start, end in self._ranges)
 
 
+_REGISTERED_FORMATS: dict[str, int] = {}
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _registered_format(name: str, user32=None) -> int:
+    if user32 is None:
+        if not hasattr(ctypes, "windll"):
+            return 0
+        user32 = ctypes.windll.user32
+    if hasattr(ctypes, "windll") and user32 is ctypes.windll.user32:
+        cached = _REGISTERED_FORMATS.get(name)
+        if cached is not None:
+            return cached
+        format_id = int(user32.RegisterClipboardFormatW(name))
+        if format_id:
+            _REGISTERED_FORMATS[name] = format_id
+        return format_id
+    return int(user32.RegisterClipboardFormatW(name))
+
+
+def _parse_png_dimensions(data: bytes) -> tuple[int, int] | None:
+    if len(data) < 24 or data[:8] != _PNG_SIGNATURE or data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
 class WindowsClipboardReader:
     CF_UNICODETEXT = 13
     CF_HDROP = 15
@@ -144,8 +177,8 @@ class WindowsClipboardReader:
         self.shell32 = ctypes.windll.shell32
         _configure_clipboard_api(self.user32, self.kernel32, self.shell32)
         _configure_process_api(self.user32, self.kernel32)
-        self._html_format = self.user32.RegisterClipboardFormatW("HTML Format")
-        self._rtf_format = self.user32.RegisterClipboardFormatW("Rich Text Format")
+        self._html_format = _registered_format("HTML Format", self.user32)
+        self._rtf_format = _registered_format("Rich Text Format", self.user32)
 
     def get_sequence_number(self) -> int:
         if not self._is_windows:
@@ -159,6 +192,9 @@ class WindowsClipboardReader:
         text: str | None = None
         rich_text: str | None = None
         file_paths: list[str] = []
+        image_bytes: bytes | None = None
+        image_width: int | None = None
+        image_height: int | None = None
 
         if not self._open_clipboard():
             return None
@@ -174,16 +210,22 @@ class WindowsClipboardReader:
                 rich_text = self._read_registered_text(self._rtf_format)
             elif self._html_format and self.user32.IsClipboardFormatAvailable(self._html_format):
                 rich_text = self._read_registered_text(self._html_format)
+
+            # Spreadsheets and office apps add a rendered bitmap next to copied text; that picture is
+            # never what the user meant to keep, so it is only read when there is no text at all.
+            if not file_paths and not _has_text(text):
+                png_format = _registered_format("PNG", self.user32)
+                if png_format and self.user32.IsClipboardFormatAvailable(png_format):
+                    raw_png = self._read_raw_format(png_format)
+                    if raw_png is not None:
+                        dims = _parse_png_dimensions(raw_png)
+                        if dims is not None:
+                            image_bytes = raw_png
+                            image_width, image_height = dims
         finally:
             self.user32.CloseClipboard()
 
-        image_bytes: bytes | None = None
-        image_width: int | None = None
-        image_height: int | None = None
-
-        # Spreadsheets and office apps add a rendered bitmap next to copied text; that picture is
-        # never what the user meant to keep, so it is only read when there is no text at all.
-        if not file_paths and not _has_text(text):
+        if not file_paths and not _has_text(text) and image_bytes is None:
             clipboard_image = ImageGrab.grabclipboard()
             if isinstance(clipboard_image, Image.Image):
                 with io.BytesIO() as buffer:
@@ -239,6 +281,23 @@ class WindowsClipboardReader:
         try:
             # Some apps cut an emoji in half; a lone surrogate would make the clip unhashable.
             return _without_lone_surrogates(ctypes.wstring_at(pointer))
+        finally:
+            self.kernel32.GlobalUnlock(handle)
+
+    def _read_raw_format(self, format_id: int) -> bytes | None:
+        handle = self.user32.GetClipboardData(format_id)
+        if not handle:
+            return None
+
+        pointer = self.kernel32.GlobalLock(handle)
+        if not pointer:
+            return None
+
+        try:
+            size = int(self.kernel32.GlobalSize(handle))
+            if size <= 0:
+                return None
+            return ctypes.string_at(pointer, size)
         finally:
             self.kernel32.GlobalUnlock(handle)
 
@@ -409,7 +468,13 @@ def _glyph_for_app(source_app: str) -> str:
 
 
 def _without_lone_surrogates(text: str) -> str:
-    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if text.isascii():
+        return text
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 def _strip_markup(value: str) -> str:
@@ -597,7 +662,7 @@ class WindowsClipboardService:
 
     def _set_rich_payload(self, value: str) -> None:
         format_name = "Rich Text Format" if value.lstrip().startswith("{\\rtf") else "HTML Format"
-        format_id = self.user32.RegisterClipboardFormatW(format_name)
+        format_id = _registered_format(format_name, self.user32)
         payload = value.encode("utf-8") + b"\x00"
         self._set_memory_payload(format_id, payload)
 
@@ -629,22 +694,33 @@ class WindowsClipboardService:
         if resolved_path is None or not resolved_path.exists():
             return False
 
-        try:
-            image = Image.open(resolved_path)
-        except (OSError, ValueError):
-            return False
+        is_png = resolved_path.suffix.lower() == ".png"
+        png_payload: bytes | None = None
+        if is_png:
+            try:
+                png_payload = resolved_path.read_bytes()
+                image = Image.open(io.BytesIO(png_payload))
+            except (OSError, ValueError):
+                return False
+        else:
+            try:
+                image = Image.open(resolved_path)
+            except (OSError, ValueError):
+                return False
 
         with image:
+            rgb_image = image if image.mode == "RGB" else image.convert("RGB")
             with io.BytesIO() as buffer:
-                image.convert("RGB").save(buffer, format="BMP")
+                rgb_image.save(buffer, format="BMP")
                 payload = buffer.getvalue()[14:]
             # CF_DIB has no usable alpha; apps that read the registered "PNG" format (Office,
             # browsers, chat apps) get the transparency back from this copy.
-            with io.BytesIO() as buffer:
-                image.save(buffer, format="PNG")
-                png_payload = buffer.getvalue()
+            if png_payload is None:
+                with io.BytesIO() as buffer:
+                    image.save(buffer, format="PNG")
+                    png_payload = buffer.getvalue()
         self._set_memory_payload(self.CF_DIB, payload)
-        png_format = self.user32.RegisterClipboardFormatW("PNG")
+        png_format = _registered_format("PNG", self.user32)
         if png_format:
             self._set_memory_payload(png_format, png_payload)
         return True

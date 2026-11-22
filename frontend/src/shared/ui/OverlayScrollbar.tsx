@@ -31,10 +31,30 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
     let travel = 0
     let drag: { pointerId: number; grab: number } | null = null
     let gutterFrame = 0
+    let cachedRect: DOMRect | null = null
+    let lastScrollable: boolean | null = null
+    let lastThumbHeight = ''
+    let lastThumbTransform = ''
+    let lastNear = false
 
     const flag = (element: HTMLElement, name: string, on: boolean) => {
       if (on) element.dataset[name] = ''
       else delete element.dataset[name]
+    }
+
+    const setNear = (near: boolean) => {
+      if (lastNear === near) return
+      lastNear = near
+      flag(bar, 'near', near)
+    }
+
+    const getBox = () => {
+      if (!cachedRect) cachedRect = scroller.getBoundingClientRect()
+      return cachedRect
+    }
+
+    const invalidateBox = () => {
+      cachedRect = null
     }
 
     // A frame later, not from inside the ResizeObserver callback: the padding it changes resizes
@@ -48,7 +68,11 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
 
     const place = () => {
       const y = range > 0 ? (scroller.scrollTop / range) * travel : 0
-      thumb.style.transform = `translateY(${y.toFixed(2)}px)`
+      const nextTransform = `translateY(${y.toFixed(2)}px)`
+      if (lastThumbTransform !== nextTransform) {
+        lastThumbTransform = nextTransform
+        thumb.style.transform = nextTransform
+      }
     }
 
     const measure = () => {
@@ -57,26 +81,33 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
       range = Math.max(0, content - view)
       const scrollable = range > 1
       setGutter(scrollable)
-      flag(bar, 'scrollable', scrollable)
+      if (lastScrollable !== scrollable) {
+        lastScrollable = scrollable
+        flag(bar, 'scrollable', scrollable)
+      }
       const track = Math.max(0, view - END_INSET_PX * 2)
       const size = scrollable ? Math.min(track, Math.max(MIN_THUMB_PX, (track * view) / content)) : 0
       travel = track - size
-      thumb.style.height = `${size}px`
+      const nextHeight = `${size}px`
+      if (lastThumbHeight !== nextHeight) {
+        lastThumbHeight = nextHeight
+        thumb.style.height = nextHeight
+      }
       place()
     }
 
     // Page units, also while the whole panel is scaled (its reveal).
     const scaleOf = (box: DOMRect) => (scroller.offsetHeight ? box.height / scroller.offsetHeight : 1) || 1
-    const fromEdge = (event: PointerEvent) => scroller.getBoundingClientRect().right - event.clientX
+    const fromEdge = (event: PointerEvent) => getBox().right - event.clientX
     const isNear = (event: PointerEvent) => {
-      const box = scroller.getBoundingClientRect()
+      const box = getBox()
       const distance = box.right - event.clientX
       return range > 1 && distance >= 0 && distance <= NEAR_PX && event.clientY >= box.top && event.clientY <= box.bottom
     }
 
     const follow = (event: PointerEvent) => {
       if (!drag) return
-      const box = scroller.getBoundingClientRect()
+      const box = getBox()
       const y = (event.clientY - box.top) / scaleOf(box) - END_INSET_PX - drag.grab
       scroller.scrollTop = travel > 0 ? (Math.min(travel, Math.max(0, y)) / travel) * range : 0
     }
@@ -87,8 +118,8 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
         return
       }
       const near = isNear(event)
-      if (near && !('near' in bar.dataset)) measure()
-      flag(bar, 'near', near)
+      if (near && !lastNear) measure()
+      setNear(near)
     }
 
     const handleDown = (event: PointerEvent) => {
@@ -97,7 +128,7 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
       if (distance < 0 || distance > GRAB_PX) return
       event.preventDefault()
       measure()
-      const box = scroller.getBoundingClientRect()
+      const box = getBox()
       const scale = scaleOf(box)
       const thumbBox = thumb.getBoundingClientRect()
       const onThumb = event.clientY >= thumbBox.top && event.clientY <= thumbBox.bottom
@@ -108,7 +139,7 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
       }
       scroller.setPointerCapture?.(event.pointerId)
       flag(bar, 'dragging', true)
-      flag(bar, 'near', true)
+      setNear(true)
       if (!onThumb) follow(event)
     }
 
@@ -117,18 +148,24 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
       drag = null
       if (scroller.hasPointerCapture?.(event.pointerId)) scroller.releasePointerCapture(event.pointerId)
       flag(bar, 'dragging', false)
-      flag(bar, 'near', isNear(event))
+      setNear(isNear(event))
     }
 
     const handleLeave = () => {
-      if (!drag) flag(bar, 'near', false)
+      if (!drag) setNear(false)
     }
 
     // The content's height changes as clips come and go; the list's own as the panel is stretched.
     // Its children are swapped too (switching filters, settings pages), so they are re-observed.
     // Rows moving on a layout animation stretch scrollHeight for a moment without resizing
     // anything, so it is read again on every scroll, on approach and when a drag starts.
-    const resizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    const resizes =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            invalidateBox()
+            measure()
+          })
     const observeChildren = () => {
       if (!resizes) return
       resizes.disconnect()
@@ -146,6 +183,8 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
     mutations?.observe(scroller, { childList: true })
     measure()
 
+    window.addEventListener('resize', invalidateBox)
+    scroller.addEventListener('pointerenter', invalidateBox)
     scroller.addEventListener('scroll', measure, { passive: true })
     scroller.addEventListener('pointermove', handleMove)
     scroller.addEventListener('pointerdown', handleDown)
@@ -157,6 +196,8 @@ export function OverlayScrollbar({ scroller }: { scroller: HTMLElement | null })
       cancelAnimationFrame(gutterFrame)
       resizes?.disconnect()
       mutations?.disconnect()
+      window.removeEventListener('resize', invalidateBox)
+      scroller.removeEventListener('pointerenter', invalidateBox)
       scroller.removeEventListener('scroll', measure)
       scroller.removeEventListener('pointermove', handleMove)
       scroller.removeEventListener('pointerdown', handleDown)

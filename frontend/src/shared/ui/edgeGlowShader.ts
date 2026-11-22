@@ -210,8 +210,61 @@ export function createEdgeGlowRenderer(canvas: OffscreenCanvas): EdgeGlowRendere
 
   const buffer = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  // One triangle that covers the whole viewport.
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
+  // 8-triangle hollow border-ring mesh (24 vertices = 48 floats); falls back to a 2-triangle quad
+  // (6 vertices = 12 floats) when the strip covers half the smaller viewport dimension.
+  const verts = new Float32Array(48)
+  let vertexCount = 0
+  let curWidth = 0
+  let curHeight = 0
+  let curDpr = 1
+  let curRadius = 0
+  let lastReach = -1
+
+  const updateMesh = (reach: number) => {
+    if (curWidth < 1 || curHeight < 1) return
+    lastReach = reach
+    const cssW = curWidth / curDpr
+    const cssH = curHeight / curDpr
+    // Match shader's `cutoff <= HALO * reach * 1.06 * 3.0`, plus 2 CSS px margin and corner arc reach.
+    const maxCutoff = HALO_PX * reach * 1.06 * 3.0 + 2
+    const stripCss =
+      curRadius > maxCutoff
+        ? (1 - Math.SQRT1_2) * curRadius + Math.SQRT1_2 * maxCutoff
+        : maxCutoff
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    if (2 * stripCss >= Math.min(cssW, cssH)) {
+      vertexCount = 6
+      verts[0] = -1; verts[1] = -1
+      verts[2] = 1;  verts[3] = -1
+      verts[4] = 1;  verts[5] = 1
+      verts[6] = -1; verts[7] = -1
+      verts[8] = 1;  verts[9] = 1
+      verts[10] = -1; verts[11] = 1
+      gl.bufferData(gl.ARRAY_BUFFER, verts.subarray(0, 12), gl.DYNAMIC_DRAW)
+      return
+    }
+
+    const x1 = -1 + (2 * stripCss) / cssW
+    const x2 = 1 - (2 * stripCss) / cssW
+    const y1 = -1 + (2 * stripCss) / cssH
+    const y2 = 1 - (2 * stripCss) / cssH
+    vertexCount = 24
+    // Top strip: [-1, 1] x [y2, 1]
+    verts[0] = -1; verts[1] = y2;  verts[2] = 1;  verts[3] = y2;  verts[4] = 1;  verts[5] = 1
+    verts[6] = -1; verts[7] = y2;  verts[8] = 1;  verts[9] = 1;   verts[10] = -1; verts[11] = 1
+    // Bottom strip: [-1, 1] x [-1, y1]
+    verts[12] = -1; verts[13] = -1; verts[14] = 1; verts[15] = -1; verts[16] = 1;  verts[17] = y1
+    verts[18] = -1; verts[19] = -1; verts[20] = 1; verts[21] = y1; verts[22] = -1; verts[23] = y1
+    // Inner-left strip: [-1, x1] x [y1, y2]
+    verts[24] = -1; verts[25] = y1; verts[26] = x1; verts[27] = y1; verts[28] = x1; verts[29] = y2
+    verts[30] = -1; verts[31] = y1; verts[32] = x1; verts[33] = y2; verts[34] = -1; verts[35] = y2
+    // Inner-right strip: [x2, 1] x [y1, y2]
+    verts[36] = x2; verts[37] = y1; verts[38] = 1;  verts[39] = y1; verts[40] = 1;  verts[41] = y2
+    verts[42] = x2; verts[43] = y1; verts[44] = 1;  verts[45] = y2; verts[46] = x2; verts[47] = y2
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW)
+  }
+
   const position = gl.getAttribLocation(program, 'aPos')
   gl.enableVertexAttribArray(position)
   gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0)
@@ -234,18 +287,27 @@ export function createEdgeGlowRenderer(canvas: OffscreenCanvas): EdgeGlowRendere
         canvas.width = width
         canvas.height = height
       }
+      curWidth = width
+      curHeight = height
+      curDpr = dpr || 1
+      curRadius = radius
       gl.viewport(0, 0, width, height)
       gl.uniform2f(u.res, width, height)
       gl.uniform1f(u.dpr, dpr)
       gl.uniform1f(u.radius, radius)
+      updateMesh(lastReach > 0 ? lastReach : 1)
     },
     draw({ time, presence, reach }) {
       gl.clear(gl.COLOR_BUFFER_BIT)
       if (presence <= 0) return
+      if (reach !== lastReach || vertexCount === 0) {
+        updateMesh(reach)
+      }
+      if (vertexCount === 0) return
       gl.uniform1f(u.time, time)
       gl.uniform1f(u.presence, presence)
       gl.uniform1f(u.reach, reach)
-      gl.drawArrays(gl.TRIANGLES, 0, 3)
+      gl.drawArrays(gl.TRIANGLES, 0, vertexCount)
     },
     dispose() {
       gl.deleteBuffer(buffer)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import os
 import sys
 from pathlib import Path
@@ -64,7 +65,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     use_own_taskbar_identity()
-    state = AppState()
+    state = AppState(persist_debounce_s=0.3)
+    atexit.register(state.flush_persistence)
     bridge = AppBridge(state)
     monitor = ClipboardMonitor(
         reader=WindowsClipboardReader(),
@@ -121,15 +123,21 @@ def main(argv: list[str] | None = None) -> None:
         startup_command=resolve_startup_command(project_root=project_root),
         toggle_window=lambda: _toggle_window_from_shortcut(state=state, window_controller=window_controller),
     )
-    state.subscribe(lambda snapshot: window_controller.dispatch_snapshot(bridge.with_window_state(snapshot)))
-    saved_appearance = {"value": state.settings.appearance.to_dict()}
+    def dispatch_snapshot_unless_bridge(snapshot: dict[str, object]) -> None:
+        if bridge._is_handling_call():
+            return
+        window_controller.dispatch_snapshot(bridge.with_window_state(snapshot))
+
+    state.subscribe(dispatch_snapshot_unless_bridge)
+    applied_appearance = [state.settings.appearance]
 
     def follow_saved_appearance(_snapshot) -> None:
         # Only react when the saved look changes, so a clip arriving mid-preview keeps the preview.
-        current = state.settings.appearance.to_dict()
-        if current != saved_appearance["value"]:
-            saved_appearance["value"] = current
-            window_controller.apply_appearance(current)
+        current = state.settings.appearance
+        if current == applied_appearance[0]:
+            return
+        applied_appearance[0] = current
+        window_controller.apply_appearance(current.to_dict())
 
     state.subscribe(follow_saved_appearance)
 
@@ -144,6 +152,7 @@ def main(argv: list[str] | None = None) -> None:
             runtime_integration=runtime_integration,
             single_instance_manager=single_instance_manager,
             foreground_watcher=foreground_watcher,
+            state=state,
         ),
     )
     tray.exit_app = lambda: _shutdown(
@@ -153,6 +162,7 @@ def main(argv: list[str] | None = None) -> None:
         runtime_integration=runtime_integration,
         single_instance_manager=single_instance_manager,
         foreground_watcher=foreground_watcher,
+        state=state,
     )
     tray.run()
     tray_holder["tray"] = tray
@@ -172,6 +182,7 @@ def _shutdown(
     runtime_integration: RuntimeIntegrationController | None,
     single_instance_manager: WindowsSingleInstanceManager | None,
     foreground_watcher: WindowsForegroundWatcher | None = None,
+    state: AppState | None = None,
 ) -> None:
     if tray is not None:
         tray.stop()
@@ -183,6 +194,8 @@ def _shutdown(
         runtime_integration.stop()
     if single_instance_manager is not None:
         single_instance_manager.stop()
+    if state is not None:
+        state.flush_persistence()
     window_controller.destroy()
 
 

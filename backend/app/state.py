@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import threading
-from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -33,7 +33,13 @@ SnapshotListener = Callable[[dict[str, object]], None]
 
 
 class AppState:
-    def __init__(self, *, storage: AppStorage | None = None, clipboard_service=None) -> None:
+    def __init__(
+        self,
+        *,
+        storage: AppStorage | None = None,
+        clipboard_service=None,
+        persist_debounce_s: float = 0.0,
+    ) -> None:
         project_root = Path(__file__).resolve().parents[2]
         default_storage_path = resolve_default_storage_path(project_root=project_root)
         self.bootstrap_storage = storage or AppStorage(base_path=default_storage_path)
@@ -53,9 +59,15 @@ class AppState:
         elif self.storage.settings_path.exists():
             self.settings = self.storage.load_settings()
         else:
-            self.settings = deepcopy(bootstrap_settings)
-            self.settings.storage_path = str(self.storage.base_path)
-        self.records = self._merge_duplicates(self.storage.load_records())
+            self.settings = replace(
+                bootstrap_settings,
+                storage_path=str(self.storage.base_path),
+                shortcuts=replace(bootstrap_settings.shortcuts),
+                appearance=replace(bootstrap_settings.appearance),
+            )
+        self._identity_cache: dict[str, tuple[str, str, str, str]] = {}
+        loaded_records = self.storage.load_records()
+        self.records, merged_mutated, merged_dropped_image = self._merge_duplicates(loaded_records)
         self.toast: ToastMessage | None = None
         # What the toast's undo brings back: the clip just deleted, or the recent clips just
         # cleared, with the bytes of their images (whose files are pruned meanwhile).
@@ -63,11 +75,25 @@ class AppState:
         self.deleted_image_bytes: dict[str, bytes] = {}
         self._listeners: list[SnapshotListener] = []
         self._lock = threading.RLock()
+        self._persist_debounce_s = max(0.0, float(persist_debounce_s))
+        self._io_lock = threading.Lock()
+        self._persist_timer: threading.Timer | None = None
+        self._records_dirty = False
+        self._pending_prune_images = False
+        self._persist_generation = 0
+        self._last_written_generation = 0
         if unavailable_path is not None:
             self.settings.storage_path = str(self.storage.base_path)
             self.toast = self._make_toast("storage_unavailable", "danger", path=unavailable_path)
-        self._normalize_storage_path()
-        self._persist_all()
+        storage_changed, normalize_dropped_image = self._normalize_storage_path()
+        if (
+            merged_mutated
+            or storage_changed
+            or unavailable_path is not None
+            or not self.storage.settings_path.exists()
+            or not self.storage.history_path.exists()
+        ):
+            self._persist_all(prune_images=merged_dropped_image or normalize_dropped_image or storage_changed)
 
     def subscribe(self, listener: SnapshotListener) -> None:
         with self._lock:
@@ -124,7 +150,8 @@ class AppState:
                 record.source_icon = self.storage.app_icon(capture.source_exe)
                 self._adopt_source(record, exe_stem_name(capture.source_exe))
 
-            existing_record = self._find_same_clip(record)
+            identity = clip_identity(record)
+            existing_record = self._find_same_clip(record, identity)
             if existing_record is not None:
                 if existing_record.type in ("text", "rich_text"):
                     # The same words copied again keep the latest form (formatted or plain).
@@ -134,17 +161,30 @@ class AppState:
                 existing_record.source_app = record.source_app
                 existing_record.source_glyph = record.source_glyph
                 existing_record.source_icon = record.source_icon
+                self._identity_cache[existing_record.id] = (
+                    existing_record.updated_at,
+                    existing_record.content_hash,
+                    existing_record.type,
+                    identity,
+                )
                 self._move_to_end(existing_record)
+                prune_images = False
             else:
                 if record.type == "image" and capture.image_bytes:
                     record.image_path = self.storage.save_image_bytes(
                         record_id=record.id,
                         image_bytes=capture.image_bytes,
                     )
+                self._identity_cache[record.id] = (
+                    record.updated_at,
+                    record.content_hash,
+                    record.type,
+                    identity,
+                )
                 self.records.append(record)
-                self._apply_retention()
+                prune_images = self._apply_retention()
 
-            self._persist_records()
+            self._persist_records(prune_images=prune_images)
             snapshot = self.snapshot()
         return self._notify(snapshot)
 
@@ -157,8 +197,8 @@ class AppState:
             record.pinned = not record.pinned
             record.updated_at = self._timestamp()
             self._move_to_end(record)
-            self._apply_retention()
-            self._persist_records()
+            dropped_image = self._apply_retention()
+            self._persist_records(prune_images=dropped_image)
             self.toast = self._make_toast("pinned" if record.pinned else "unpinned", "success", summary=record.summary)
             snapshot = self.snapshot()
         return self._notify(snapshot)
@@ -169,9 +209,11 @@ class AppState:
             if record is None:
                 return self.snapshot()
 
+            had_image = bool(record.image_path)
             self._keep_for_undo([record])
+            self._identity_cache.pop(record_id, None)
             self.records = [item for item in self.records if item.id != record_id]
-            self._persist_records()
+            self._persist_records(prune_images=had_image)
             self.toast = self._make_toast("deleted", "danger", action_kind="undo_delete", summary=record.summary)
             snapshot = self.snapshot()
         return self._notify(snapshot)
@@ -202,15 +244,15 @@ class AppState:
             if not self.deleted_records:
                 return self.snapshot()
 
-            restored = [deepcopy(record) for record in self.deleted_records]
+            restored = [_clone_record(record) for record in self.deleted_records]
             for record in restored:
                 image_bytes = self.deleted_image_bytes.get(record.id)
                 if record.type == "image" and image_bytes is not None:
                     record.image_path = self.storage.save_image_bytes(record_id=record.id, image_bytes=image_bytes)
 
             self.records.extend(restored)
-            self._apply_retention()
-            self._persist_records()
+            dropped_image = self._apply_retention()
+            self._persist_records(prune_images=dropped_image)
             self.toast = (
                 self._make_toast("restored", "success", summary=restored[0].summary)
                 if len(restored) == 1
@@ -222,9 +264,11 @@ class AppState:
 
     def clear_all_history(self) -> dict[str, object]:
         with self._lock:
+            had_image = any(record.image_path for record in self.records)
             self.records = []
+            self._identity_cache.clear()
             self._keep_for_undo([])
-            self._persist_records()
+            self._persist_records(prune_images=had_image)
             self.toast = self._make_toast("cleared_all", "danger")
             snapshot = self.snapshot()
         return self._notify(snapshot)
@@ -232,9 +276,12 @@ class AppState:
     def clear_unpinned_history(self) -> dict[str, object]:
         with self._lock:
             removed = [record for record in self.records if not record.pinned]
+            had_image = any(record.image_path for record in removed)
+            for record in removed:
+                self._identity_cache.pop(record.id, None)
             self._keep_for_undo(removed)
             self.records = [record for record in self.records if record.pinned]
-            self._persist_records()
+            self._persist_records(prune_images=had_image)
             self.toast = self._make_toast(
                 "cleared_unpinned",
                 "danger",
@@ -312,13 +359,15 @@ class AppState:
             self.view = "panel"
             requested_path = self.settings.storage_path
             try:
-                self._normalize_storage_path()
+                storage_changed, normalize_dropped_image = self._normalize_storage_path()
                 storage_failed = False
             except OSError:
                 self.settings.storage_path = str(self.storage.base_path)
+                storage_changed = False
+                normalize_dropped_image = False
                 storage_failed = True
-            self._apply_retention()
-            self._persist_all()
+            dropped_image = self._apply_retention()
+            self._persist_all(prune_images=dropped_image or normalize_dropped_image or storage_changed)
             self.toast = (
                 self._make_toast("storage_unwritable", "danger", path=requested_path)
                 if storage_failed
@@ -342,7 +391,7 @@ class AppState:
             record = self._find_record(record_id)
             if record is None:
                 return self.snapshot()
-            record = deepcopy(record)
+            record = _clone_record(record)
 
         if self.clipboard_service.write_record(record, as_plain_text=as_plain_text) is False:
             # Another app held the clipboard: Ctrl+V now would paste whatever was there before.
@@ -370,7 +419,7 @@ class AppState:
         return snapshot
 
     def _keep_for_undo(self, records: list[HistoryRecord]) -> None:
-        self.deleted_records = [deepcopy(record) for record in records]
+        self.deleted_records = [_clone_record(record) for record in records]
         self.deleted_image_bytes = {}
         for record in records:
             if record.type == "image":
@@ -378,26 +427,82 @@ class AppState:
                 if image_bytes is not None:
                     self.deleted_image_bytes[record.id] = image_bytes
 
-    def _persist_records(self) -> None:
+    def _persist_records(self, *, prune_images: bool = False) -> None:
         """Clips changed, settings did not: only the history file is written."""
-        self.storage.save_records(self.records)
-        self.storage.prune_unreferenced_images(record.image_path for record in self.records)
+        self._persist_generation += 1
+        generation = self._persist_generation
+        if self._persist_debounce_s <= 0.0:
+            with self._io_lock:
+                self.storage.save_records(self.records)
+                self._last_written_generation = max(self._last_written_generation, generation)
+                if prune_images:
+                    self.storage.prune_unreferenced_images(record.image_path for record in self.records)
+            return
 
-    def _persist_all(self) -> None:
-        self.settings.storage_path = str(self.storage.base_path)
-        self.storage.save_settings(self.settings)
-        self._persist_records()
-        if self.bootstrap_storage.base_path != self.storage.base_path:
-            bootstrap_settings = deepcopy(self.settings)
-            bootstrap_settings.storage_path = str(self.storage.base_path)
-            self.bootstrap_storage.save_settings(bootstrap_settings)
+        self._records_dirty = True
+        self._pending_prune_images = self._pending_prune_images or prune_images
+        if self._persist_timer is not None:
+            self._persist_timer.cancel()
+        timer = threading.Timer(self._persist_debounce_s, self.flush_persistence)
+        timer.daemon = True
+        timer.start()
+        self._persist_timer = timer
 
-    def _normalize_storage_path(self) -> None:
+    def flush_persistence(self) -> None:
+        with self._lock:
+            if self._persist_timer is not None:
+                self._persist_timer.cancel()
+                self._persist_timer = None
+            if not self._records_dirty:
+                return
+            generation = self._persist_generation
+            records_snapshot = [_clone_record(record) for record in self.records]
+            storage = self.storage
+            prune_images = self._pending_prune_images
+            self._records_dirty = False
+            self._pending_prune_images = False
+        with self._io_lock:
+            if generation < self._last_written_generation:
+                return
+            storage.save_records(records_snapshot)
+            self._last_written_generation = generation
+        if prune_images:
+            # Prune under self._lock so a concurrently captured image file can never be deleted
+            # before its record is added to self.records.
+            with self._lock:
+                if self.storage is storage:
+                    storage.prune_unreferenced_images(record.image_path for record in self.records if record.image_path)
+
+    def _persist_all(self, *, prune_images: bool = False) -> None:
+        self._persist_generation += 1
+        generation = self._persist_generation
+        if self._persist_timer is not None:
+            self._persist_timer.cancel()
+            self._persist_timer = None
+        self._records_dirty = False
+        self._pending_prune_images = False
+        with self._io_lock:
+            self.settings.storage_path = str(self.storage.base_path)
+            self.storage.save_settings(self.settings)
+            self.storage.save_records(self.records)
+            self._last_written_generation = max(self._last_written_generation, generation)
+            if prune_images:
+                self.storage.prune_unreferenced_images(record.image_path for record in self.records)
+            if self.bootstrap_storage.base_path != self.storage.base_path:
+                bootstrap_settings = replace(self.settings, storage_path=str(self.storage.base_path))
+                self.bootstrap_storage.save_settings(bootstrap_settings)
+
+    def _normalize_storage_path(self) -> tuple[bool, bool]:
         storage_path = Path(self.settings.storage_path)
+        storage_changed = False
+        dropped_image = False
         if storage_path != self.storage.base_path:
+            storage_changed = True
             previous_storage = self.storage
             target_storage = self._resolve_storage_for_path(storage_path)
-            self.records = self._merge_duplicates(self._merge_records(self.records, target_storage.load_records()))
+            merged = self._merge_records(self.records, target_storage.load_records())
+            self._identity_cache.clear()
+            self.records, _, dropped_image = self._merge_duplicates(merged)
             self.records = self._migrate_record_images(self.records, target_storage)
             self.storage = target_storage
             # The history moved: leave nothing behind, or switching back later would resurrect
@@ -406,14 +511,27 @@ class AppState:
                 previous_storage.save_records([])
                 previous_storage.prune_unreferenced_images([])
         self.settings.storage_path = str(self.storage.base_path)
+        return storage_changed, dropped_image
 
-    def _apply_retention(self) -> None:
+    def _apply_retention(self) -> bool:
         sorted_records = self._sorted_records()
         retained_ids: set[str] = {record.id for record in sorted_records if record.pinned}
         unpinned_records = [record for record in sorted_records if not record.pinned]
 
         retained_ids.update(record.id for record in unpinned_records[: self.settings.history_limit])
-        self.records = [record for record in self.records if record.id in retained_ids]
+        if len(retained_ids) == len(self.records):
+            return False
+        dropped_image = False
+        kept: list[HistoryRecord] = []
+        for record in self.records:
+            if record.id in retained_ids:
+                kept.append(record)
+            else:
+                self._identity_cache.pop(record.id, None)
+                if record.image_path:
+                    dropped_image = True
+        self.records = kept
+        return dropped_image
 
     def _sorted_records(self) -> list[HistoryRecord]:
         # Newest first; on equal timestamps the record touched later (later in the list) wins.
@@ -438,28 +556,50 @@ class AppState:
                 other.source_glyph = record.source_glyph
                 other.source_icon = record.source_icon
 
-    def _find_same_clip(self, record: HistoryRecord) -> HistoryRecord | None:
+    def _clip_identity(self, record: HistoryRecord) -> str:
+        cached = self._identity_cache.get(record.id)
+        if (
+            cached is not None
+            and cached[0] == record.updated_at
+            and cached[1] == record.content_hash
+            and cached[2] == record.type
+        ):
+            return cached[3]
         identity = clip_identity(record)
-        return next((other for other in self.records if clip_identity(other) == identity), None)
+        self._identity_cache[record.id] = (record.updated_at, record.content_hash, record.type, identity)
+        return identity
 
-    @staticmethod
-    def _merge_duplicates(records: list[HistoryRecord]) -> list[HistoryRecord]:
+    def _find_same_clip(self, record: HistoryRecord, identity: str | None = None) -> HistoryRecord | None:
+        target_identity = clip_identity(record) if identity is None else identity
+        return next((other for other in self.records if self._clip_identity(other) == target_identity), None)
+
+    def _merge_duplicates(self, records: list[HistoryRecord]) -> tuple[list[HistoryRecord], bool, bool]:
         """History saved before duplicates were recognised by their text can hold the same clip
         several times. One record per clip stays: the latest one, pinned if any copy was, with
         the first copy's creation time."""
         groups: dict[str, list[HistoryRecord]] = {}
+        identities: list[str] = []
         for record in records:
-            groups.setdefault(clip_identity(record), []).append(record)
+            identity = self._clip_identity(record)
+            identities.append(identity)
+            groups.setdefault(identity, []).append(record)
         kept: list[HistoryRecord] = []
-        for record in records:
-            group = groups[clip_identity(record)]
+        mutated = False
+        dropped_image = False
+        for record, identity in zip(records, identities):
+            group = groups[identity]
             latest = max(group, key=lambda item: item.updated_at)
             if record is not latest:
+                mutated = True
+                self._identity_cache.pop(record.id, None)
+                if record.image_path:
+                    dropped_image = True
                 continue
-            latest.pinned = any(item.pinned for item in group)
-            latest.created_at = min(item.created_at for item in group)
+            if len(group) > 1:
+                latest.pinned = any(item.pinned for item in group)
+                latest.created_at = min(item.created_at for item in group)
             kept.append(latest)
-        return kept
+        return kept, mutated, dropped_image
 
     def _resolve_storage_for_path(self, storage_path: Path) -> AppStorage:
         if storage_path == self.bootstrap_storage.base_path:
@@ -471,16 +611,16 @@ class AppState:
         current_records: list[HistoryRecord],
         target_records: list[HistoryRecord],
     ) -> list[HistoryRecord]:
-        merged_records = {record.id: deepcopy(record) for record in target_records}
+        merged_records = {record.id: _clone_record(record) for record in target_records}
         for record in current_records:
-            merged_records[record.id] = deepcopy(record)
+            merged_records[record.id] = _clone_record(record)
         return list(merged_records.values())
 
     @staticmethod
     def _migrate_record_images(records: list[HistoryRecord], storage: AppStorage) -> list[HistoryRecord]:
         migrated_records: list[HistoryRecord] = []
         for record in records:
-            migrated_record = deepcopy(record)
+            migrated_record = _clone_record(record)
             if migrated_record.type == "image" and migrated_record.image_path:
                 migrated_record.image_path = storage.import_image_path(
                     record_id=migrated_record.id,
@@ -509,6 +649,10 @@ class AppState:
     def _default_settings() -> SettingsState:
         default_storage_path = resolve_default_storage_path(project_root=Path(__file__).resolve().parents[2])
         return default_settings(storage_path=str(default_storage_path))
+
+
+def _clone_record(record: HistoryRecord) -> HistoryRecord:
+    return replace(record, file_paths=list(record.file_paths))
 
 
 def _image_file_stem(created_at: str) -> str:

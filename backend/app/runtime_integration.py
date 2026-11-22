@@ -60,9 +60,11 @@ class RuntimeIntegrationController:
         self._toggle_panel_shortcut: str | None = None
 
     def sync(self, snapshot: dict[str, object]) -> None:
-        settings = dict(snapshot.get("settings", {}))
+        raw_settings = snapshot.get("settings")
+        settings = raw_settings if isinstance(raw_settings, dict) else {}
         launch_on_startup = bool(settings.get("launchOnStartup", False))
-        shortcuts = dict(settings.get("shortcuts", {}))
+        raw_shortcuts = settings.get("shortcuts")
+        shortcuts = raw_shortcuts if isinstance(raw_shortcuts, dict) else {}
         toggle_panel_shortcut = str(shortcuts.get("togglePanel", ""))
 
         if launch_on_startup != self._launch_on_startup:

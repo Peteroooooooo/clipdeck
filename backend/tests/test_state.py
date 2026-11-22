@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
@@ -847,3 +848,59 @@ def test_concurrent_ingest_and_bridge_calls_keep_history_consistent(tmp_path: Pa
     assert errors == []
     assert len(snapshot["pinnedRecords"]) + len(snapshot["recentRecords"]) == 120
     assert len(state.storage.load_records()) == 120
+
+
+def test_debounced_persistence_coalesces_writes_and_flush_persists_immediately(tmp_path: Path) -> None:
+    storage = AppStorage(base_path=tmp_path / "data")
+    state = AppState(storage=storage, persist_debounce_s=0.05)
+
+    save_calls = 0
+    original_save_records = storage.save_records
+
+    def counting_save_records(records) -> None:
+        nonlocal save_calls
+        save_calls += 1
+        original_save_records(records)
+
+    storage.save_records = counting_save_records
+
+    first = state.ingest_capture(
+        ClipboardCapture(text="first item", source_app="VS Code"),
+        captured_at="2026-03-11T13:00:00",
+    )
+    second = state.ingest_capture(
+        ClipboardCapture(text="second item", source_app="VS Code"),
+        captured_at="2026-03-11T13:00:01",
+    )
+    first_id = str(first["recentRecords"][0]["id"])
+    second_id = str(second["recentRecords"][0]["id"])
+    state.toggle_pin(first_id)
+    state.delete_record(second_id)
+
+    assert save_calls == 0
+
+    state.flush_persistence()
+
+    assert save_calls == 1
+    reloaded = AppState(storage=AppStorage(base_path=tmp_path / "data"))
+    assert [record["summary"] for record in reloaded.snapshot()["pinnedRecords"]] == ["first item"]
+    assert reloaded.snapshot()["recentRecords"] == []
+
+    # Subsequent rapid mutations coalesce onto a single timer write.
+    third = state.ingest_capture(
+        ClipboardCapture(text="third item", source_app="Word"),
+        captured_at="2026-03-11T13:00:02",
+    )
+    state.toggle_pin(str(third["recentRecords"][0]["id"]))
+
+    deadline = time.monotonic() + 1.0
+    while save_calls < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert save_calls == 2
+    reloaded_after_timer = AppState(storage=AppStorage(base_path=tmp_path / "data"))
+    assert [record["summary"] for record in reloaded_after_timer.snapshot()["pinnedRecords"]] == [
+        "third item",
+        "first item",
+    ]
+

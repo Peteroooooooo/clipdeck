@@ -57,11 +57,23 @@ def identify_source_app() -> SourceApp:
     return SourceApp("Clipboard")
 
 
+_DISPLAY_NAME_CACHE: dict[str, str] = {}
+
+
 def display_name(exe_path: str) -> str:
+    if file_description is _DEFAULT_FILE_DESCRIPTION:
+        key = os.path.normcase(exe_path)
+        cached = _DISPLAY_NAME_CACHE.get(key)
+        if cached is not None:
+            return cached
     description = (file_description(exe_path) or "").strip()
     if description and len(description) <= MAX_NAME_LENGTH:
-        return description
-    return exe_stem_name(exe_path) or "Clipboard"
+        result = description
+    else:
+        result = exe_stem_name(exe_path) or "Clipboard"
+    if file_description is _DEFAULT_FILE_DESCRIPTION:
+        _DISPLAY_NAME_CACHE[key] = result
+    return result
 
 
 def file_description(exe_path: str) -> str | None:
@@ -86,6 +98,9 @@ def file_description(exe_path: str) -> str | None:
         if version.VerQueryValueW(data, query, ctypes.byref(pointer), ctypes.byref(length)) and length.value > 1:
             return ctypes.wstring_at(pointer, length.value - 1)
     return None
+
+
+_DEFAULT_FILE_DESCRIPTION = file_description
 
 
 def extract_icon_png(exe_path: str, size: int = ICON_SIZE) -> bytes | None:

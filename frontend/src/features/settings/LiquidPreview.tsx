@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { MagnifyingGlass, PushPin } from '@phosphor-icons/react'
 import { useT } from '../../app/i18n'
 import { LiquidGlass } from '../../shared/ui/liquid/LiquidGlass'
@@ -24,7 +25,7 @@ function SampleRows() {
 }
 
 /** Live sample of the liquid glass, rendered with the unsaved settings. */
-export function LiquidPreview() {
+export const LiquidPreview = memo(function LiquidPreview() {
   const t = useT()
   // A fragment, not a wrapper: the stage is sticky within the Liquid Glass section, so it stays
   // in view while the sliders below it are dragged.
@@ -48,4 +49,4 @@ export function LiquidPreview() {
       </div>
     </>
   )
-}
+})

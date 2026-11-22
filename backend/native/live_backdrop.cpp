@@ -75,6 +75,9 @@ constexpr int kEdgeBand = 96;
 constexpr float kDragFrequency = 26.0f;
 constexpr float kDragDamping = 0.62f;
 
+constexpr size_t kSharedSize = sizeof(SharedCapture) + kCapturePixelCapacity;
+constexpr size_t kCommitChunk = 1024ull * 1024;
+
 struct FilterParams {
     float sigma = 0;  // Gaussian standard deviation in physical pixels (CSS blur() radius)
     float saturation = 1;
@@ -117,6 +120,7 @@ struct FilteredGlass {
     std::mutex lock;
     FilterParams params;
     Frame pending;
+    Frame recycled;
     bool hasPending = false;
     std::atomic<bool> drawQueued{false};
     std::atomic<bool> offsetQueued{false};
@@ -125,6 +129,9 @@ struct FilteredGlass {
     std::atomic<bool> stop{false};
     std::atomic<int> status{0};  // 0 starting, 1 delivering frames, -1 unavailable
     std::condition_variable started;
+    std::mutex wakeMutex;
+    std::condition_variable wakeCv;
+    uint64_t wakeSeq = 0;
     HWND panel = nullptr;
     int inset = 0;
     std::thread worker;
@@ -143,8 +150,13 @@ struct FilteredGlass {
     LONG surfaceTop = 0;
     com_ptr<ID2D1Bitmap1> bitmap;
     com_ptr<ID2D1Effect> border;
+    com_ptr<ID2D1Effect> downscale;
     com_ptr<ID2D1Effect> blur;
     com_ptr<ID2D1Effect> color;
+    com_ptr<ID2D1Effect> upscale;
+    int lastBlurMode = 0;  // 0 = unset, 1 = full, 2 = half
+    float lastSigma = -1.0f;
+    float lastSaturation = -1.0f;
     bool hasDrawn = false;
 };
 
@@ -217,12 +229,22 @@ void CreateRenderingDevice(FilteredGlass& glass) {
     winrt::check_hresult(glass.dc->CreateEffect(CLSID_D2D1Border, glass.border.put()));
     winrt::check_hresult(glass.border->SetValue(D2D1_BORDER_PROP_EDGE_MODE_X, D2D1_BORDER_EDGE_MODE_CLAMP));
     winrt::check_hresult(glass.border->SetValue(D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_BORDER_EDGE_MODE_CLAMP));
+    winrt::check_hresult(glass.dc->CreateEffect(CLSID_D2D1Scale, glass.downscale.put()));
+    winrt::check_hresult(glass.downscale->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(0.5f, 0.5f)));
+    winrt::check_hresult(
+        glass.downscale->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE, D2D1_SCALE_INTERPOLATION_MODE_LINEAR));
+    glass.downscale->SetInputEffect(0, glass.border.get());
     winrt::check_hresult(glass.dc->CreateEffect(CLSID_D2D1GaussianBlur, glass.blur.put()));
-    glass.blur->SetInputEffect(0, glass.border.get());
-    winrt::check_hresult(glass.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY));
     winrt::check_hresult(glass.dc->CreateEffect(CLSID_D2D1ColorMatrix, glass.color.put()));
     winrt::check_hresult(glass.color->SetValue(D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT, TRUE));
+    winrt::check_hresult(glass.dc->CreateEffect(CLSID_D2D1Scale, glass.upscale.put()));
+    winrt::check_hresult(glass.upscale->SetValue(D2D1_SCALE_PROP_SCALE, D2D1::Vector2F(2.0f, 2.0f)));
+    winrt::check_hresult(
+        glass.upscale->SetValue(D2D1_SCALE_PROP_INTERPOLATION_MODE, D2D1_SCALE_INTERPOLATION_MODE_LINEAR));
     glass.bitmap = nullptr;
+    glass.lastBlurMode = 0;
+    glass.lastSigma = -1.0f;
+    glass.lastSaturation = -1.0f;
 }
 
 void RecoverRenderingDevice(FilteredGlass& glass) {
@@ -285,13 +307,50 @@ void Render(FilteredGlass& glass, Frame const& frame, FilterParams const& params
     winrt::check_hresult(glass.bitmap->CopyFromMemory(nullptr, frame.pixels.data(), frame.stride));
 
     bool const blurring = params.sigma >= 0.5f;
+    bool const downsampled = params.sigma >= 4.0f;
+    bool const saturating = std::fabs(params.saturation - 1.0f) >= 0.001f;
     if (blurring) {
-        winrt::check_hresult(glass.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, params.sigma));
-        glass.color->SetInputEffect(0, glass.blur.get());
-    } else {
-        glass.color->SetInputEffect(0, glass.border.get());
+        int const blurMode = downsampled ? 2 : 1;
+        if (blurMode != glass.lastBlurMode) {
+            if (downsampled) {
+                glass.blur->SetInputEffect(0, glass.downscale.get());
+                winrt::check_hresult(
+                    glass.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED));
+            } else {
+                glass.blur->SetInputEffect(0, glass.border.get());
+                winrt::check_hresult(
+                    glass.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY));
+            }
+            glass.lastBlurMode = blurMode;
+        }
+        float const effectiveSigma = downsampled ? params.sigma * 0.5f : params.sigma;
+        if (effectiveSigma != glass.lastSigma) {
+            winrt::check_hresult(glass.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, effectiveSigma));
+            glass.lastSigma = effectiveSigma;
+        }
     }
-    winrt::check_hresult(glass.color->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, ColorMatrix(params)));
+    if (saturating && params.saturation != glass.lastSaturation) {
+        winrt::check_hresult(glass.color->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX, ColorMatrix(params)));
+        glass.lastSaturation = params.saturation;
+    }
+    ID2D1Effect* output = nullptr;
+    if (downsampled) {
+        if (saturating) {
+            glass.color->SetInputEffect(0, glass.blur.get());
+            glass.upscale->SetInputEffect(0, glass.color.get());
+        } else {
+            glass.upscale->SetInputEffect(0, glass.blur.get());
+        }
+        output = glass.upscale.get();
+    } else {
+        ID2D1Effect* preColor = blurring ? glass.blur.get() : glass.border.get();
+        if (saturating) {
+            glass.color->SetInputEffect(0, preColor);
+            output = glass.color.get();
+        } else {
+            output = preColor;
+        }
+    }
 
     int const width = static_cast<int>(frame.width) + 2 * kEdgeBand;
     int const height = static_cast<int>(frame.height) + 2 * kEdgeBand;
@@ -317,13 +376,12 @@ void Render(FilteredGlass& glass, Frame const& frame, FilterParams const& params
     winrt::check_hresult(interop->BeginDraw(nullptr, __uuidof(ID2D1DeviceContext), target.put_void(), &offset));
     target->SetDpi(96, 96);
     target->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(offset.x), static_cast<float>(offset.y)));
-    target->Clear(D2D1::ColorF(0, 0, 0, 0));
     target->PushAxisAlignedClip(D2D1::RectF(0, 0, surfaceSize.Width, surfaceSize.Height), D2D1_ANTIALIAS_MODE_ALIASED);
     // The border effect clamps outwards, so the band around the captured area is its smeared edge.
     D2D1_POINT_2F const at{0.0f, 0.0f};
     D2D1_RECT_F const source{-static_cast<float>(kEdgeBand), -static_cast<float>(kEdgeBand),
                              static_cast<float>(frame.width + kEdgeBand), static_cast<float>(frame.height + kEdgeBand)};
-    target->DrawImage(glass.color.get(), &at, &source);
+    target->DrawImage(output, &at, &source, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_COPY);
     target->PopAxisAlignedClip();
     winrt::check_hresult(interop->EndDraw());
 
@@ -351,7 +409,7 @@ void DrawPendingFrame() {
         if (!glass.hasPending) {
             return;
         }
-        frame = std::move(glass.pending);
+        std::swap(frame, glass.pending);
         glass.hasPending = false;
         params = glass.params;
     }
@@ -365,6 +423,20 @@ void DrawPendingFrame() {
         }
         glass.paramsDirty = true;
     }
+    {
+        std::lock_guard guard(glass.lock);
+        if (glass.recycled.pixels.empty() || glass.recycled.pixels.capacity() < frame.pixels.capacity()) {
+            std::swap(glass.recycled, frame);
+        }
+    }
+}
+
+void WakeCapture(FilteredGlass& glass) {
+    {
+        std::lock_guard guard(glass.wakeMutex);
+        ++glass.wakeSeq;
+    }
+    glass.wakeCv.notify_all();
 }
 
 // ---------------------------------------------------------------- capture (worker thread)
@@ -375,6 +447,13 @@ void DrawPendingFrame() {
 // named shared-memory block.
 class CaptureClient {
 public:
+    struct View {
+        uint8_t const* pixels = nullptr;
+        UINT width = 0;
+        UINT height = 0;
+        UINT stride = 0;
+    };
+
     ~CaptureClient() {
         if (view_ != nullptr) {
             UnmapViewOfFile(view_);
@@ -390,7 +469,7 @@ public:
         DWORD const self = GetCurrentProcessId();
         wchar_t name[96];
         CaptureObjectName(name, self, L"Memory");
-        ULONGLONG const size = sizeof(SharedCapture) + kCapturePixelCapacity;
+        ULONGLONG const size = kSharedSize;
         mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE | SEC_RESERVE,
                                       static_cast<DWORD>(size >> 32), static_cast<DWORD>(size), name);
         CaptureObjectName(name, self, L"Request");
@@ -401,9 +480,10 @@ public:
             return false;
         }
         view_ = static_cast<SharedCapture*>(MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, 0));
-        if (view_ == nullptr || VirtualAlloc(view_, static_cast<SIZE_T>(size), MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+        if (view_ == nullptr || VirtualAlloc(view_, sizeof(SharedCapture), MEM_COMMIT, PAGE_READWRITE) == nullptr) {
             return false;
         }
+        committed_ = sizeof(SharedCapture);
 
         // The helper sits next to this DLL.
         wchar_t path[MAX_PATH];
@@ -432,7 +512,22 @@ public:
         return true;
     }
 
-    bool Grab(HWND exclude, RECT const& area, Frame& frame) {
+    bool Grab(HWND exclude, RECT const& area, View& out) {
+        if (area.right <= area.left || area.bottom <= area.top) {
+            return false;
+        }
+        UINT const width = static_cast<UINT>(area.right - area.left);
+        UINT const height = static_cast<UINT>(area.bottom - area.top);
+        size_t const maxPixels = kCapturePixelCapacity / 4;
+        if (static_cast<size_t>(width) > maxPixels / height) {
+            return false;
+        }
+        size_t const pixelBytes = static_cast<size_t>(width) * height * 4;
+        size_t const needed = std::min(kSharedSize, sizeof(SharedCapture) + pixelBytes + 4096);
+        if (!EnsureCommitted(needed)) {
+            return false;
+        }
+
         view_->left = area.left;
         view_->top = area.top;
         view_->right = area.right;
@@ -444,25 +539,42 @@ public:
         if (WaitForMultipleObjects(2, waits, FALSE, 1000) != WAIT_OBJECT_0 || !view_->ok) {
             return false;
         }
-        UINT const width = static_cast<UINT>(area.right - area.left);
-        UINT const height = static_cast<UINT>(area.bottom - area.top);
         if (view_->width != width || view_->height != height) {
             return false;
         }
-        auto const* pixels = reinterpret_cast<uint8_t const*>(view_ + 1);
-        frame.pixels.assign(pixels, pixels + static_cast<size_t>(view_->stride) * view_->height);
-        frame.width = view_->width;
-        frame.height = view_->height;
-        frame.stride = view_->stride;
+        size_t const actualBytes = static_cast<size_t>(view_->stride) * view_->height;
+        if (actualBytes > kCapturePixelCapacity || !EnsureCommitted(sizeof(SharedCapture) + actualBytes)) {
+            return false;
+        }
+        out.pixels = reinterpret_cast<uint8_t const*>(view_ + 1);
+        out.width = view_->width;
+        out.height = view_->height;
+        out.stride = view_->stride;
         return true;
     }
 
 private:
+    bool EnsureCommitted(size_t needed) {
+        if (needed <= committed_) {
+            return true;
+        }
+        if (needed > kSharedSize) {
+            return false;
+        }
+        size_t const grow = std::min(kSharedSize, ((needed + kCommitChunk - 1) / kCommitChunk) * kCommitChunk);
+        if (VirtualAlloc(view_, grow, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+            return false;
+        }
+        committed_ = grow;
+        return true;
+    }
+
     HANDLE mapping_ = nullptr;
     HANDLE request_ = nullptr;
     HANDLE done_ = nullptr;
     HANDLE process_ = nullptr;
     SharedCapture* view_ = nullptr;
+    size_t committed_ = 0;
 };
 
 void QueueDraw(FilteredGlass& glass) {
@@ -477,11 +589,11 @@ void CaptureLoop(FilteredGlass* glass) {
     bool ready = capture.Start();
 
     // Prove the helper actually delivers pixels on this system before reporting success.
-    Frame frame;
     if (ready) {
         RECT probe{};
         GetWindowRect(glass->panel, &probe);
-        ready = capture.Grab(glass->panel, RECT{probe.left, probe.top, probe.left + 8, probe.top + 8}, frame);
+        CaptureClient::View probeView{};
+        ready = capture.Grab(glass->panel, RECT{probe.left, probe.top, probe.left + 8, probe.top + 8}, probeView);
     }
     glass->status = ready ? 1 : -1;
     glass->started.notify_all();
@@ -496,15 +608,29 @@ void CaptureLoop(FilteredGlass* glass) {
     while (ready && !glass->stop) {
         auto const begin = std::chrono::steady_clock::now();
 
+        uint64_t seq;
+        {
+            std::lock_guard guard(glass->wakeMutex);
+            seq = glass->wakeSeq;
+        }
+
         FilterParams params;
         {
             std::lock_guard guard(glass->lock);
             params = glass->params;
         }
-        bool const showing = glass->enabled && IsWindowVisible(glass->panel) && !IsIconic(glass->panel);
-        if (!showing || params.Identity()) {
+        bool const enabled = glass->enabled.load();
+        if (!enabled || params.Identity()) {
             wasShowing = false;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::unique_lock guard(glass->wakeMutex);
+            glass->wakeCv.wait(guard, [&] { return glass->stop.load() || glass->wakeSeq != seq; });
+            continue;
+        }
+        if (!IsWindowVisible(glass->panel) || IsIconic(glass->panel)) {
+            wasShowing = false;
+            std::unique_lock guard(glass->wakeMutex);
+            glass->wakeCv.wait_for(guard, std::chrono::milliseconds(250),
+                                   [&] { return glass->stop.load() || glass->wakeSeq != seq; });
             continue;
         }
 
@@ -530,36 +656,63 @@ void CaptureLoop(FilteredGlass* glass) {
         };
         if (area.right <= area.left || area.bottom <= area.top || glassRect.right <= glassRect.left ||
             glassRect.bottom <= glassRect.top) {
-            std::this_thread::sleep_for(kActiveFrame);
+            std::unique_lock guard(glass->wakeMutex);
+            glass->wakeCv.wait_for(guard, kActiveFrame,
+                                   [&] { return glass->stop.load() || glass->wakeSeq != seq; });
             continue;
         }
 
-        if (!capture.Grab(glass->panel, area, frame)) {
+        CaptureClient::View view{};
+        if (!capture.Grab(glass->panel, area, view)) {
             if (++emptyGrabs >= kGiveUpAfterEmptyGrabs) {
                 // The API stopped delivering (a future Windows change?): fall back to the host backdrop.
                 glass->status = -1;
                 glass->ui.TryEnqueue([] { ApplyVisibility(); });
                 break;
             }
-            std::this_thread::sleep_for(kActiveFrame);
+            std::unique_lock guard(glass->wakeMutex);
+            glass->wakeCv.wait_for(guard, kActiveFrame,
+                                   [&] { return glass->stop.load() || glass->wakeSeq != seq; });
             continue;
         }
         emptyGrabs = 0;
-        frame.left = area.left;
-        frame.top = area.top;
 
+        size_t const bytes = static_cast<size_t>(view.stride) * view.height;
         bool const moved = std::memcmp(&area, &previousArea, sizeof(RECT)) != 0;
-        bool const changed = !wasShowing || moved || glass->paramsDirty.exchange(false) ||
-                             frame.pixels.size() != previous.pixels.size() ||
-                             std::memcmp(frame.pixels.data(), previous.pixels.data(), frame.pixels.size()) != 0;
+        bool const sameFormat = view.width == previous.width && view.height == previous.height &&
+                                view.stride == previous.stride && bytes == previous.pixels.size();
+        bool const changed = !wasShowing || moved || glass->paramsDirty.exchange(false) || !sameFormat ||
+                             std::memcmp(view.pixels, previous.pixels.data(), bytes) != 0;
         if (changed) {
+            previous.pixels.resize(bytes);
+            std::memcpy(previous.pixels.data(), view.pixels, bytes);
+            previous.width = view.width;
+            previous.height = view.height;
+            previous.stride = view.stride;
+            previous.left = area.left;
+            previous.top = area.top;
+
+            Frame next;
             {
                 std::lock_guard guard(glass->lock);
-                glass->pending = frame;
+                std::swap(next, glass->recycled);
+            }
+            next.pixels.resize(bytes);
+            std::memcpy(next.pixels.data(), view.pixels, bytes);
+            next.width = view.width;
+            next.height = view.height;
+            next.stride = view.stride;
+            next.left = area.left;
+            next.top = area.top;
+            {
+                std::lock_guard guard(glass->lock);
+                std::swap(glass->pending, next);
                 glass->hasPending = true;
+                if (next.pixels.capacity() > glass->recycled.pixels.capacity()) {
+                    std::swap(glass->recycled, next);
+                }
             }
             QueueDraw(*glass);
-            std::swap(previous, frame);
             previousArea = area;
             stillFrames = 0;
         } else {
@@ -573,7 +726,9 @@ void CaptureLoop(FilteredGlass* glass) {
                                                                  : kActiveFrame;
         auto const spent = std::chrono::steady_clock::now() - begin;
         if (spent < budget) {
-            std::this_thread::sleep_for(budget - spent);
+            std::unique_lock guard(glass->wakeMutex);
+            glass->wakeCv.wait_for(guard, budget - spent,
+                                   [&] { return glass->stop.load() || glass->wakeSeq != seq; });
         }
     }
 }
@@ -785,6 +940,7 @@ extern "C" __declspec(dllexport) void cc_live_filter_set(float sigma, float satu
     }
     glass.paramsDirty = true;
     ApplyVisibility();
+    WakeCapture(glass);
 }
 
 // 1 while the filtered glass delivers frames, 0 while starting, -1 when unavailable.
@@ -802,6 +958,9 @@ extern "C" __declspec(dllexport) void cc_live_backdrop_resize(float width, float
     }
     const float inset = g_backdrop->inset;
     g_backdrop->shape.Size(float2{width - 2.0f * inset, height - 2.0f * inset});
+    if (g_backdrop->filtered != nullptr) {
+        WakeCapture(*g_backdrop->filtered);
+    }
 }
 
 extern "C" __declspec(dllexport) void cc_live_backdrop_set_radius(float radius) {
@@ -820,8 +979,15 @@ extern "C" __declspec(dllexport) void cc_live_backdrop_set_visible(int visible) 
     if (g_backdrop->filtered != nullptr) {
         g_backdrop->filtered->enabled = g_backdrop->live;
         g_backdrop->filtered->paramsDirty = true;
+        WakeCapture(*g_backdrop->filtered);
     }
     ApplyVisibility();
+}
+
+extern "C" __declspec(dllexport) void cc_live_backdrop_wake() {
+    if (g_backdrop != nullptr && g_backdrop->filtered != nullptr) {
+        WakeCapture(*g_backdrop->filtered);
+    }
 }
 
 // Starts dragging `hwnd` after a press on the page's drag region; the drag ends when the button
@@ -838,6 +1004,9 @@ extern "C" __declspec(dllexport) int cc_window_drag_begin(HWND hwnd, int grabX, 
         g_dragging = false;
         return static_cast<int>(E_FAIL);
     }
+    if (g_backdrop != nullptr && g_backdrop->filtered != nullptr) {
+        WakeCapture(*g_backdrop->filtered);
+    }
     return 0;
 }
 
@@ -850,6 +1019,9 @@ extern "C" __declspec(dllexport) void cc_live_backdrop_animate(
     float opacity, float scale, int ms, float centerX, float centerY, int fromConcealed, float concealScale) {
     if (g_backdrop == nullptr) {
         return;
+    }
+    if (g_backdrop->filtered != nullptr) {
+        WakeCapture(*g_backdrop->filtered);
     }
     try {
         auto& root = g_backdrop->root;

@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, LayoutGroup, motion, useAnimate } from 'motion/react'
 import { GearSix, MagnifyingGlass, X } from '@phosphor-icons/react'
 import { recordTitle, sourceName, useT, type Strings } from '../../app/i18n'
@@ -68,6 +68,7 @@ function followDrop(
   magnifier: HTMLElement,
   restX: number,
   fullWidth: number,
+  stopWhenMerged: boolean,
   isCurrent: () => boolean,
 ) {
   const started = performance.now()
@@ -83,6 +84,10 @@ function followDrop(
     const drawnX = (glyph.left + glyph.width / 2 - rowBox.left) / (scale || 1)
     const width = bar.getBoundingClientRect().width / (scale || 1)
     const asDrop = 1 - Math.min(1, Math.max(0, (width - DROP) / Math.max(1, fullWidth - DROP)))
+    if (stopWhenMerged && asDrop <= 0) {
+      bar.style.translate = ''
+      return
+    }
     bar.style.translate = `${((drawnX - restX) * asDrop).toFixed(2)}px 0`
     requestAnimationFrame(step)
   }
@@ -193,15 +198,20 @@ export function QuickPanelView({
   const [filter, setFilter] = useState<FilterKey>('all')
   const deferredQuery = useDeferredValue(query)
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [selectionHint, setSelectionHint] = useState<{ deletedId: string; fallbackId: string | null } | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   // Stays true while the bar folds back into the magnifier, after searchOpen has gone false.
   const [searchShown, setSearchShown] = useState(false)
+  const [searchAnimating, setSearchAnimating] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
   const panelRef = useRef<HTMLElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const magnifierRef = useRef<HTMLButtonElement | null>(null)
   const searchRowRef = useRef<HTMLDivElement | null>(null)
   const [listScroller, setListScroller] = useState<HTMLDivElement | null>(null)
+  const listScrollerRef = useRef<HTMLDivElement | null>(null)
+  const visibilityObserverRef = useRef<IntersectionObserver | null>(null)
+  const visibilityCallbacksRef = useRef(new WeakMap<Element, (near: boolean) => void>())
   const blurTimerRef = useRef(0)
   const [barRef, animateBar] = useAnimate<HTMLDivElement>()
   const shouldScrollActiveIntoViewRef = useRef(false)
@@ -246,13 +256,94 @@ export function QuickPanelView({
     }
   }, [pinPulse])
 
-  const isVisible = (record: HistoryRecord) => matchesFilter(record, filter) && matchesQuery(record, deferredQuery, t)
-  const visiblePinned = pinnedRecords.filter(isVisible)
-  const visibleRecent = recentRecords.filter(isVisible)
-  const allCards = [...visiblePinned, ...visibleRecent]
+  const visiblePinned = useMemo(
+    () => pinnedRecords.filter((record) => matchesFilter(record, filter) && matchesQuery(record, deferredQuery, t)),
+    [pinnedRecords, filter, deferredQuery, t],
+  )
+  const visibleRecent = useMemo(
+    () => recentRecords.filter((record) => matchesFilter(record, filter) && matchesQuery(record, deferredQuery, t)),
+    [recentRecords, filter, deferredQuery, t],
+  )
+  const allCards = useMemo(() => [...visiblePinned, ...visibleRecent], [visiblePinned, visibleRecent])
+  const timeLabels = useMemo(() => {
+    const labels = new Map<string, string>()
+    for (const record of visiblePinned) {
+      labels.set(record.id, timeAgo(record.updatedAt, t.time, Math.max(shownAt, Date.parse(record.updatedAt) || 0)))
+    }
+    for (const record of visibleRecent) {
+      labels.set(record.id, timeAgo(record.updatedAt, t.time, Math.max(shownAt, Date.parse(record.updatedAt) || 0)))
+    }
+    return labels
+  }, [visiblePinned, visibleRecent, shownAt, t])
   const hasRecords = pinnedRecords.length + recentRecords.length > 0
   const resolvedActiveId =
-    activeId === null ? null : allCards.some((record) => record.id === activeId) ? activeId : (allCards[0]?.id ?? null)
+    activeId === null
+      ? null
+      : allCards.some((record) => record.id === activeId)
+        ? activeId
+        : selectionHint &&
+            selectionHint.deletedId === activeId &&
+            selectionHint.fallbackId !== null &&
+            allCards.some((record) => record.id === selectionHint.fallbackId)
+          ? selectionHint.fallbackId
+          : (allCards[0]?.id ?? null)
+
+  useEffect(() => () => {
+    visibilityObserverRef.current?.disconnect()
+    visibilityObserverRef.current = null
+  }, [])
+
+  const handleScrollerRef = useCallback((node: HTMLDivElement | null) => {
+    listScrollerRef.current = node
+    setListScroller(node)
+    if (visibilityObserverRef.current && visibilityObserverRef.current.root !== node) {
+      visibilityObserverRef.current.disconnect()
+      visibilityObserverRef.current = null
+    }
+  }, [])
+
+  const observeCardVisibility = useCallback((element: HTMLElement, onChange: (near: boolean) => void) => {
+    if (typeof IntersectionObserver === 'undefined') return () => {}
+    let observer = visibilityObserverRef.current
+    if (!observer) {
+      const root = listScrollerRef.current
+      if (!root) return () => {}
+      observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            visibilityCallbacksRef.current.get(entry.target)?.(entry.isIntersecting)
+          }
+        },
+        { root, rootMargin: '240px 0px' },
+      )
+      visibilityObserverRef.current = observer
+    }
+    const callbacks = visibilityCallbacksRef.current
+    callbacks.set(element, onChange)
+    observer.observe(element)
+    return () => {
+      callbacks.delete(element)
+      observer.unobserve(element)
+    }
+  }, [])
+
+  const handleActivate = useCallback((recordId: string) => {
+    setActiveId(recordId)
+  }, [])
+
+  const handleDelete = useCallback(
+    (recordId: string) => {
+      const cards = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[data-record-id]') ?? [])
+      const index = cards.findIndex((card) => card.dataset.recordId === recordId)
+      if (index >= 0 && cards[index].dataset.active === 'true') {
+        const fallbackId = cards[index + 1]?.dataset.recordId ?? cards[index - 1]?.dataset.recordId ?? null
+        setActiveId(recordId)
+        setSelectionHint({ deletedId: recordId, fallbackId })
+      }
+      onDelete(recordId)
+    },
+    [onDelete],
+  )
 
   useEffect(() => {
     panelRef.current?.focus()
@@ -302,7 +393,17 @@ export function QuickPanelView({
     const dropY = magBox.top + magBox.height / 2 - DROP / 2 - (rowLayout.top + BAR_INSET_Y)
     const instant = motionOff()
     const run = ++barRun.current
-    if (!instant) followDrop(bar, row, magnifier, magBox.left + magBox.width / 2 - rowLayout.left, fullWidth, () => barRun.current === run)
+    if (!instant) {
+      followDrop(
+        bar,
+        row,
+        magnifier,
+        magBox.left + magBox.width / 2 - rowLayout.left,
+        fullWidth,
+        searchOpen,
+        () => barRun.current === run,
+      )
+    }
 
     // Clicked again mid-animation: carry on from wherever the bar is, never from the start.
     const box = bar.getBoundingClientRect()
@@ -326,6 +427,7 @@ export function QuickPanelView({
         // Back to the stylesheet's size, so the bar follows the window if it is resized.
         bar.style.width = ''
         bar.style.height = ''
+        setSearchAnimating(false)
       }
       if (visible && !isDrop) {
         // Was folding back as a bar: spread straight out again.
@@ -355,6 +457,7 @@ export function QuickPanelView({
 
     const closed = () => {
       if (barRun.current !== run) return
+      setSearchAnimating(false)
       setSearchShown((shown) => (searchOpenRef.current ? shown : false))
     }
     if (isDrop) {
@@ -387,12 +490,14 @@ export function QuickPanelView({
     }
     setSearchShown(true)
     setSearchOpen(true)
+    if (!motionOff()) setSearchAnimating(true)
   }
 
   function closeSearch() {
     window.clearTimeout(blurTimerRef.current)
     if (!searchOpen) return
     setSearchOpen(false)
+    if (!motionOff()) setSearchAnimating(true)
     setQuery('')
     if (document.activeElement === inputRef.current) {
       panelRef.current?.focus({ preventScroll: true })
@@ -450,7 +555,7 @@ export function QuickPanelView({
 
     if (activeRecord && !typing && matchesShortcut(event, shortcuts.deleteRecord)) {
       event.preventDefault()
-      onDelete(activeRecord.id)
+      handleDelete(activeRecord.id)
       return
     }
 
@@ -480,15 +585,16 @@ export function QuickPanelView({
       isActive={resolvedActiveId === record.id}
       isPinned={record.pinned}
       key={record.id}
-      onActivate={setActiveId}
-      onDelete={onDelete}
+      observeVisibility={observeCardVisibility}
+      onActivate={handleActivate}
+      onDelete={handleDelete}
       onCopy={onCopy}
       onPinToggle={onTogglePin}
       onPlainTextPaste={onPastePlainText}
       onPrimaryAction={onPrimaryAction}
       onSaveImage={onSaveImage}
       record={record}
-      timeLabel={timeAgo(record.updatedAt, t.time, Math.max(shownAt, Date.parse(record.updatedAt) || 0))}
+      timeLabel={timeLabels.get(record.id) ?? ''}
     />
   )
 
@@ -603,7 +709,7 @@ export function QuickPanelView({
           ref={barRef}
         >
           <label className="search-field">
-            <LiquidGlass className="search-glass">
+            <LiquidGlass className="search-glass" freezeMap={searchAnimating}>
               <MagnifyingGlass className="search-icon" size={15} weight="bold" />
               <input
                 aria-label={t.panel.searchHistory}
@@ -654,7 +760,7 @@ export function QuickPanelView({
           onPointerLeave={(event) => {
             if (event.pointerType === 'mouse') setActiveId(null)
           }}
-          ref={setListScroller}
+          ref={handleScrollerRef}
         >
           {allCards.length ? (
             // Keyed by filter: switching tabs cross-fades the whole list instead of popping rows.
